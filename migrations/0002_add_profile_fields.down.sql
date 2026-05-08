@@ -1,0 +1,4 @@
+ALTER TABLE users
+    DROP COLUMN IF EXISTS username,
+    DROP COLUMN IF EXISTS bio,
+    DROP COLUMN IF EXISTS country;
