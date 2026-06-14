@@ -15,10 +15,18 @@ func WithPostgres() RunInterceptor {
 		db, err := pgconn.FromViper(ctx, runner.Viper.Sub(pgconn.ViperSubsetKey))
 		if err != nil {
 			if pgconn.IsConnectionErr(err) {
-				return fmt.Errorf("postgres is not ready: %w", err)
+				return NewNotReadyError(err, "postgres")
 			}
 
 			return fmt.Errorf("starting postgres: %w", err)
+		}
+
+		// pgxpool connects lazily, so ping to confirm the database is actually
+		// reachable before declaring postgres ready.
+		if err := db.Ping(ctx); err != nil {
+			db.Close()
+
+			return NewNotReadyError(err, "postgres")
 		}
 
 		defer db.Close()

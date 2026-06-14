@@ -1,4 +1,4 @@
-bgex-server:
+server:
   env: development
   port: "8080"
   jwt:
@@ -17,7 +17,13 @@ bgex-server:
       - http://localhost:5173
 
 postgres:
-  url: pgconn://bgex:bgex@localhost:5432/bgex?sslmode=disable
+  host: localhost
+  port: 5432
+  username: bgex
+  password: bgex
+  database: bgex
+  applicationName: bgex-server
 
 redis:
-  url: redisconn://localhost:6379/0
+  cluster_host: localhost
+  cluster_port: 6379

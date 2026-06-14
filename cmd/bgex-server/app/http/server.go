@@ -2,10 +2,11 @@ package http
 
 import (
 	"context"
-	"errors"
-	"fmt"
+	"crypto/sha256"
 	"net/http"
 	"time"
+
+	"github.com/gin-gonic/gin"
 
 	"github.com/serediukit/bgex-backend/cmd/bgex-server/app"
 	"github.com/serediukit/bgex-backend/internal/domain/auth"
@@ -16,8 +17,16 @@ import (
 	"github.com/serediukit/bgex-backend/pkg/logger"
 )
 
-func NewServer(r *app.Runner) (*http.Server, error) {
+// NewServer wires the domain dependencies and builds the *http.Server. Serving
+// and graceful shutdown are handled by the plugin (see plugin.go).
+func NewServer(ctx context.Context, r *app.Runner) (*http.Server, error) {
+	log := logger.FromContext(ctx)
+
 	serverConfig := serverConfigFromViper(r.Viper)
+
+	if serverConfig.isProduction() {
+		gin.SetMode(gin.ReleaseMode)
+	}
 
 	// --- wire domain dependencies ---
 	userRepo := user.NewRepository(r.DB)
@@ -29,7 +38,7 @@ func NewServer(r *app.Runner) (*http.Server, error) {
 	if serverConfig.GoogleOAuth.enabled() {
 		googleOAuth = auth.NewGoogleOAuth(serverConfig.GoogleOAuth.ClientID, serverConfig.GoogleOAuth.ClientSecret, serverConfig.GoogleOAuth.RedirectURL)
 	} else {
-		logger.FromContext(ctx).Warn("google oauth disabled — set GOOGLE_OAUTH_CLIENT_ID/SECRET/REDIRECT_URL to enable")
+		log.Warn("google oauth disabled — set GOOGLE_OAUTH_CLIENT_ID/SECRET/REDIRECT_URL to enable")
 	}
 
 	oauthStateKey := deriveStateKey(serverConfig.JWT.Secret)
@@ -45,9 +54,14 @@ func NewServer(r *app.Runner) (*http.Server, error) {
 	authMW := middleware.RequireAuth(authSvc)
 
 	router := httpx.NewRouter(httpx.RouterOptions{
-		Logger:         logger.FromContext(ctx),
+		Logger:         log.Logger,
 		AllowedOrigins: serverConfig.CORS.AllowedOrigins,
-		ReadyCheck:     r.HealthChecker.CheckStatus(ctx),
+		ReadyCheck: func() error {
+			checkCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			return r.HealthChecker.CheckStatus(checkCtx)
+		},
 		APIRoutes: []httpx.RouteRegistrar{
 			authHandler.Register(authMW),
 			userHandler.Register(authMW),
@@ -56,7 +70,6 @@ func NewServer(r *app.Runner) (*http.Server, error) {
 	})
 
 	srv := &http.Server{
-		Addr:              ":" + serverConfig.Port,
 		Handler:           router,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -64,30 +77,13 @@ func NewServer(r *app.Runner) (*http.Server, error) {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	errCh := make(chan error, 1)
-	go func() {
-		logger.FromContext(ctx).Info("http server listening", "addr", srv.Addr, "env", serverConfig.Env)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
-			return
-		}
-		errCh <- nil
-	}()
+	return srv, nil
+}
 
-	select {
-	case <-ctx.Done():
-		logger.Info("shutdown signal received")
-	case err := <-errCh:
-		if err != nil {
-			return fmt.Errorf("http server: %w", err)
-		}
-		return nil
-	}
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("shutdown: %w", err)
-	}
-	return nil
+// deriveStateKey produces a 32-byte key for OAuth state HMAC, derived from the
+// JWT secret so operators don't need a separate env var. Distinct domain of use
+// from JWT signing thanks to SHA-256 with a domain-separation prefix.
+func deriveStateKey(secret string) []byte {
+	h := sha256.Sum256([]byte("bgex-oauth-state\x00" + secret))
+	return h[:]
 }

@@ -30,22 +30,25 @@ type CORSConfig struct {
 	AllowedOrigins []string `mapstructure:"allowed_origins"`
 }
 
+// ViperSubsetKey is the top-level config key holding HTTP server settings.
+const ViperSubsetKey = "server"
+
 func serverConfigFromViper(v *viper.Viper) *ServerConfig {
 	return &ServerConfig{
-		Env:  v.GetString("env"),
-		Port: v.GetString("port"),
+		Env:  v.GetString(ViperSubsetKey + ".env"),
+		Port: v.GetString(ViperSubsetKey + ".port"),
 		JWT: JWTConfig{
-			Secret:          v.GetString("secret"),
-			AccessTTL:       v.GetDuration("access_ttl"),
-			RefreshTokenTTL: v.GetDuration("refresh_ttl"),
+			Secret:          v.GetString(ViperSubsetKey + ".jwt.secret"),
+			AccessTTL:       v.GetDuration(ViperSubsetKey + ".jwt.access_ttl"),
+			RefreshTokenTTL: v.GetDuration(ViperSubsetKey + ".jwt.refresh_token_ttl"),
 		},
 		GoogleOAuth: GoogleOAuthConfig{
-			ClientID:     v.GetString("client_id"),
-			ClientSecret: v.GetString("client_secret"),
-			RedirectURL:  v.GetString("redirect_url"),
+			ClientID:     v.GetString(ViperSubsetKey + ".google_oauth.client_id"),
+			ClientSecret: v.GetString(ViperSubsetKey + ".google_oauth.client_secret"),
+			RedirectURL:  v.GetString(ViperSubsetKey + ".google_oauth.redirect_url"),
 		},
 		CORS: CORSConfig{
-			AllowedOrigins: v.GetStringSlice("allowed_origins"),
+			AllowedOrigins: v.GetStringSlice(ViperSubsetKey + ".cors.allowed_origins"),
 		},
 	}
 }

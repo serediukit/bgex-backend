@@ -21,10 +21,10 @@ type Options struct {
 
 func DefaultOptions() *Options {
 	return &Options{
-		Address:        ":50051",
+		Address:        ":8080",
 		MetricsAddress: ":9100",
-		ConfigFile:     "configs/text-assist-server.yaml",
-		EnvPrefix:      "TEXT_ASSIST_SERVER",
+		ConfigFile:     "config/server.yaml",
+		EnvPrefix:      "BGEX",
 		StartupPeriod:  time.Second,
 		StartupTimeout: time.Second * 15,
 		ShutdownDelay:  time.Second * 10,

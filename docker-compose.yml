@@ -1,7 +1,7 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: bgex-pgconn
+    container_name: bgex-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: bgex
@@ -19,15 +19,15 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: bgex-redisconn
+    container_name: bgex-redis
     restart: unless-stopped
-    command: ["redisconn-server", "--appendonly", "yes"]
+    command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "6379:6379"
     volumes:
       - bgex_redisdata:/data
     healthcheck:
-      test: ["CMD", "redisconn-cli", "ping"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 10
