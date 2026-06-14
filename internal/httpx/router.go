@@ -1,10 +1,10 @@
 package httpx
 
 import (
-	"log/slog"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 
 	"github.com/serediukit/bgex-backend/internal/httpx/middleware"
 )
@@ -15,7 +15,7 @@ type RouteRegistrar func(r *gin.RouterGroup)
 
 // RouterOptions bundles the dependencies required to build the gin engine.
 type RouterOptions struct {
-	Logger         *slog.Logger
+	Logger         *logrus.Logger
 	AllowedOrigins []string
 	ReadyCheck     func() error
 	APIRoutes      []RouteRegistrar

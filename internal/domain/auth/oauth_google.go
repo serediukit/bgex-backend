@@ -8,7 +8,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/bytedance/gopkg/util/logger"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
@@ -57,13 +57,13 @@ func (g *GoogleOAuth) Exchange(ctx context.Context, code string) (*GoogleUserInf
 	if err != nil {
 		return nil, fmt.Errorf("build userinfo request: %w", err)
 	}
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("fetch userinfo: %w", err)
 	}
 	defer func(Body io.ReadCloser) {
 		if err := Body.Close(); err != nil {
-			logger.Warnf("close body in oauth exchange: %s", err)
+			logrus.WithError(err).Warn("close body in oauth exchange")
 		}
 	}(resp.Body)
 

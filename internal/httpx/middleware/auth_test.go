@@ -34,7 +34,7 @@ func newEngine(v middleware.AccessTokenVerifier) *gin.Engine {
 
 func TestRequireAuth_MissingHeader(t *testing.T) {
 	r := newEngine(stubVerifier{})
-	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/protected", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
@@ -44,7 +44,7 @@ func TestRequireAuth_MissingHeader(t *testing.T) {
 
 func TestRequireAuth_InvalidToken(t *testing.T) {
 	r := newEngine(stubVerifier{returnErr: errors.New("bad")})
-	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/protected", nil)
 	req.Header.Set("Authorization", "Bearer something")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -56,7 +56,7 @@ func TestRequireAuth_InvalidToken(t *testing.T) {
 func TestRequireAuth_Valid(t *testing.T) {
 	uid := uuid.New()
 	r := newEngine(stubVerifier{returnID: uid})
-	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/protected", nil)
 	req.Header.Set("Authorization", "Bearer valid")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)

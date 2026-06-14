@@ -110,8 +110,9 @@ func (s *Service) GetRelationshipStatus(ctx context.Context, viewerID, targetID 
 		} else {
 			rs.Status = KindPendingReceived
 		}
+	case StatusDeclined:
+		fallthrough
 	default:
-		// declined — treat as no relationship
 		rs.Status = KindNone
 		rs.RequestID = nil
 	}

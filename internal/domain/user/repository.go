@@ -11,9 +11,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var ErrNotFound = errors.New("user not found")
-var ErrEmailTaken = errors.New("email already in use")
-var ErrUsernameTaken = errors.New("username already in use")
+var (
+	ErrNotFound      = errors.New("user not found")
+	ErrEmailTaken    = errors.New("email already in use")
+	ErrUsernameTaken = errors.New("username already in use")
+)
 
 type Repository struct {
 	pool *pgxpool.Pool

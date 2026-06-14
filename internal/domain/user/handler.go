@@ -61,13 +61,7 @@ func (h *Handler) updateMe(c *gin.Context) {
 	}
 
 	id := middleware.UserIDFrom(c.Request.Context())
-	params := UpdateParams{
-		Username:    req.Username,
-		DisplayName: req.DisplayName,
-		AvatarURL:   req.AvatarURL,
-		Bio:         req.Bio,
-		Country:     req.Country,
-	}
+	params := UpdateParams(req)
 
 	u, err := h.svc.UpdateProfile(c.Request.Context(), id, params)
 	if err != nil {

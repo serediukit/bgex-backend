@@ -7,9 +7,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// ErrorCode is a stable machine-readable code for API errors.
 type ErrorCode string
 
+//nolint:gosec
 const (
 	CodeInvalidRequest    ErrorCode = "invalid_request"
 	CodeUnauthorized      ErrorCode = "unauthorized"

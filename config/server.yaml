@@ -17,7 +17,7 @@ bgex-server:
       - http://localhost:5173
 
 postgres:
-  url: postgres://bgex:bgex@localhost:5432/bgex?sslmode=disable
+  url: pgconn://bgex:bgex@localhost:5432/bgex?sslmode=disable
 
 redis:
-  url: redis://localhost:6379/0
+  url: redisconn://localhost:6379/0

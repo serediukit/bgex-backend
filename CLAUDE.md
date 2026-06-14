@@ -18,18 +18,18 @@ This repo is the Go backend. The frontend is a separate repo.
 | Password hashing | argon2id (RFC 9106 params) |
 | OAuth | Google OAuth 2.0 (`golang.org/x/oauth2`) |
 | Config | `caarlos0/env/v11` + `joho/godotenv` |
-| Logging | stdlib `log/slog` (text in dev, JSON in prod) |
+| Logging | `sirupsen/logrus` (text in dev, JSON in prod) |
 | IDs | `google/uuid` (UUID v4) |
 
 ## Local dev
 
 ```bash
-make db-up        # start postgres:16 on :5432 (docker compose)
+make db-up        # start pgconn:16 on :5432 (docker compose)
 cp .env.example .env
 # set JWT_SECRET >= 32 bytes: openssl rand -base64 48
 make migrate-up   # apply ./migrations
-make run          # go run ./cmd/app — listens on :8080
-make db-down      # stop postgres
+make run          # go run ./cmd/bgex-server — listens on :8080
+make db-down      # stop pgconn
 ```
 
 Key env vars:

@@ -24,7 +24,7 @@ const (
 var ErrInvalidPassword = errors.New("invalid password")
 
 // HashPassword returns a PHC-formatted argon2id hash.
-// Format: $argon2id$v=19$m=65536,t=3,p=2$<salt>$<hash>
+// Format: $argon2id$v=19$m=65536,t=3,p=2$<salt>$<hash>.
 func HashPassword(plain string) (string, error) {
 	salt := make([]byte, argonSaltLen)
 	if _, err := rand.Read(salt); err != nil {
@@ -67,7 +67,7 @@ func VerifyPassword(encoded, plain string) error {
 		return ErrInvalidPassword
 	}
 
-	candidate := argon2.IDKey([]byte(plain), salt, time, memory, threads, uint32(len(expected)))
+	candidate := argon2.IDKey([]byte(plain), salt, time, memory, threads, uint32(len(expected))) //nolint:gosec
 	if subtle.ConstantTimeCompare(expected, candidate) != 1 {
 		return ErrInvalidPassword
 	}

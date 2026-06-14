@@ -268,7 +268,7 @@ func scanRequest(row interface{ Scan(...any) error }) (*Request, error) {
 }
 
 // scanRequestsWithUser scans rows from a query that joins friend_requests with users.
-// Expected columns: fr.id, u.id, u.username, u.display_name, u.avatar_url, u.bio, u.country, u.created_at, fr.created_at
+// Expected columns: fr.id, u.id, u.username, u.display_name, u.avatar_url, u.bio, u.country, u.created_at, fr.created_at.
 func scanRequestsWithUser(rows pgx.Rows) ([]RequestWithUser, error) {
 	var result []RequestWithUser
 	for rows.Next() {

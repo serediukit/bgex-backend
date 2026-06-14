@@ -1,14 +1,14 @@
 package middleware
 
 import (
-	"log/slog"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 )
 
-// AccessLog emits a structured log line per request using the given slog.Logger.
-func AccessLog(logger *slog.Logger) gin.HandlerFunc {
+// AccessLog emits a structured logger line per request using the given logrus.Logger.
+func AccessLog(logger *logrus.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 		path := c.Request.URL.Path
@@ -16,41 +16,33 @@ func AccessLog(logger *slog.Logger) gin.HandlerFunc {
 
 		c.Next()
 
-		attrs := []any{
-			"method", c.Request.Method,
-			"path", path,
-			"status", c.Writer.Status(),
-			"duration_ms", time.Since(start).Milliseconds(),
-			"client_ip", c.ClientIP(),
-			"request_id", RequestIDFrom(c.Request.Context()),
+		status := c.Writer.Status()
+		fields := logrus.Fields{
+			"method":      c.Request.Method,
+			"path":        path,
+			"status":      status,
+			"duration_ms": time.Since(start).Milliseconds(),
+			"client_ip":   c.ClientIP(),
+			"request_id":  RequestIDFrom(c.Request.Context()),
 		}
 		if raw != "" {
-			attrs = append(attrs, "query", raw)
+			fields["query"] = raw
 		}
 		if len(c.Errors) > 0 {
-			attrs = append(attrs, "errors", c.Errors.String())
+			fields["errors"] = c.Errors.String()
 		}
 
-		logger.LogAttrs(c.Request.Context(), levelFromStatus(c.Writer.Status()), "http_request", toSlogAttrs(attrs)...)
+		logger.WithContext(c.Request.Context()).WithFields(fields).Log(levelFromStatus(status), "http_request")
 	}
 }
 
-func levelFromStatus(status int) slog.Level {
+func levelFromStatus(status int) logrus.Level {
 	switch {
 	case status >= 500:
-		return slog.LevelError
+		return logrus.ErrorLevel
 	case status >= 400:
-		return slog.LevelWarn
+		return logrus.WarnLevel
 	default:
-		return slog.LevelInfo
+		return logrus.InfoLevel
 	}
-}
-
-func toSlogAttrs(kv []any) []slog.Attr {
-	out := make([]slog.Attr, 0, len(kv)/2)
-	for i := 0; i+1 < len(kv); i += 2 {
-		key, _ := kv[i].(string)
-		out = append(out, slog.Any(key, kv[i+1]))
-	}
-	return out
 }

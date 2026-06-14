@@ -3,7 +3,6 @@ package user
 import (
 	"context"
 	"errors"
-	"fmt"
 	"regexp"
 	"strings"
 
@@ -52,10 +51,10 @@ func validateUpdateParams(p UpdateParams) error {
 		*p.Country = c
 	}
 	if p.Bio != nil && len(*p.Bio) > 280 {
-		return fmt.Errorf("bio must be at most 280 characters")
+		return errors.New("bio must be at most 280 characters")
 	}
 	if p.DisplayName != nil && len(*p.DisplayName) > 64 {
-		return fmt.Errorf("display_name must be at most 64 characters")
+		return errors.New("display_name must be at most 64 characters")
 	}
 	return nil
 }

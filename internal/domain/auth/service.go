@@ -134,6 +134,8 @@ func (s *Service) GoogleAuthURL() (authURL, state string, err error) {
 }
 
 // GoogleCallback validates the state, exchanges the code, upserts the user, and issues tokens.
+//
+//nolint:gocyclo
 func (s *Service) GoogleCallback(ctx context.Context, code, state, cookieState string) (*user.User, *Tokens, error) {
 	if s.google == nil {
 		return nil, nil, ErrOAuthNotConfigured
@@ -244,7 +246,7 @@ func (s *Service) signState() (string, error) {
 }
 
 func (s *Service) verifyState(state string) bool {
-	for i := 0; i < len(state); i++ {
+	for i := range len(state) {
 		if state[i] == '.' {
 			nonce := state[:i]
 			sig := state[i+1:]

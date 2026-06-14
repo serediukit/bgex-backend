@@ -1,0 +1,33 @@
+package app
+
+import (
+	"time"
+)
+
+type Options struct {
+	EnvPrefix             string
+	ConfigFile            string
+	Address               string
+	MetricsAddress        string
+	LogLevel              string
+	LogFile               string
+	StartupTimeout        time.Duration
+	StartupPeriod         time.Duration
+	ShutdownDelay         time.Duration
+	CollectGoMetrics      bool
+	CollectProcessMetrics bool
+	EnablePprof           bool
+}
+
+func DefaultOptions() *Options {
+	return &Options{
+		Address:        ":50051",
+		MetricsAddress: ":9100",
+		ConfigFile:     "configs/text-assist-server.yaml",
+		EnvPrefix:      "TEXT_ASSIST_SERVER",
+		StartupPeriod:  time.Second,
+		StartupTimeout: time.Second * 15,
+		ShutdownDelay:  time.Second * 10,
+		LogLevel:       "info",
+	}
+}
