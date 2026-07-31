@@ -12,6 +12,10 @@ import (
 	"github.com/serediukit/bgex-backend/internal/domain/auth"
 	"github.com/serediukit/bgex-backend/internal/domain/friends"
 	"github.com/serediukit/bgex-backend/internal/domain/user"
+	"github.com/serediukit/bgex-backend/internal/games/engine"
+	"github.com/serediukit/bgex-backend/internal/games/lobby"
+	"github.com/serediukit/bgex-backend/internal/games/poker"
+	"github.com/serediukit/bgex-backend/internal/games/realtime"
 	"github.com/serediukit/bgex-backend/internal/httpx"
 	"github.com/serediukit/bgex-backend/internal/httpx/middleware"
 	"github.com/serediukit/bgex-backend/pkg/logger"
@@ -51,6 +55,20 @@ func NewServer(ctx context.Context, r *app.Runner) (*http.Server, error) {
 	friendsSvc := friends.NewService(friendsRepo)
 	friendsHandler := friends.NewHandler(friendsSvc)
 
+	// --- games: reusable framework + poker ---
+	pokerEngine := poker.New()
+	pokerSession := poker.NewSession(r.DB, poker.NewStateRepo(), pokerEngine)
+
+	engines := engine.NewRegistry(pokerEngine)
+	lobbyRepo := lobby.NewRepository(r.DB)
+	lobbySvc := lobby.NewService(lobbyRepo, engines, map[string]lobby.GameInitializer{
+		poker.GameKey: pokerSession,
+	})
+	lobbyHandler := lobby.NewHandler(lobbySvc)
+
+	hub := realtime.NewHub()
+	realtimeHandler := realtime.NewHandler(authSvc, lobbySvc, hub, log.Logger, pokerSession)
+
 	authMW := middleware.RequireAuth(authSvc)
 
 	router := httpx.NewRouter(httpx.RouterOptions{
@@ -66,6 +84,8 @@ func NewServer(ctx context.Context, r *app.Runner) (*http.Server, error) {
 			authHandler.Register(authMW),
 			userHandler.Register(authMW),
 			friendsHandler.Register(authMW),
+			lobbyHandler.Register(authMW),
+			realtimeHandler.Register(authMW),
 		},
 	})
 

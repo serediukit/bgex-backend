@@ -5,7 +5,7 @@ export
 SERVER_DIR := ./cmd/bgex-server
 MIGRATIONS_DIR := ./migrations
 
-.PHONY: run build test vet lint lint-fix fmt tidy migrate-up migrate-down migrate-new services-up services-down db-up db-down db-logs redis-up redis-down redis-logs
+.PHONY: run build test vet lint lint-fix fmt tidy proto-gen migrate-up migrate-down migrate-new services-up services-down db-up db-down db-logs redis-up redis-down redis-logs
 
 run:
 	go run $(SERVER_DIR)
@@ -30,6 +30,12 @@ fmt:
 
 tidy:
 	go mod tidy
+
+# Regenerate protobuf Go code for every game that defines .proto contracts.
+# Requires protoc + protoc-gen-go (go install google.golang.org/protobuf/cmd/protoc-gen-go@latest).
+proto-gen:
+	PATH="$$(go env GOPATH)/bin:$$PATH" protoc --go_out=. --go_opt=module=github.com/serediukit/bgex-backend \
+		$$(find internal/games -name '*.proto')
 
 docker-up:
 	docker-compose up -d

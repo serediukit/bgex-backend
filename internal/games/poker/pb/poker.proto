@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package bgex.poker.v1;
+
+option go_package = "github.com/serediukit/bgex-backend/internal/games/poker/pb;pokerpb";
+
+// Stage is the current point in a Texas Hold'em hand.
+enum Stage {
+  STAGE_UNSPECIFIED = 0;
+  STAGE_PREFLOP = 1;
+  STAGE_FLOP = 2;
+  STAGE_TURN = 3;
+  STAGE_RIVER = 4;
+  STAGE_SHOWDOWN = 5;
+  STAGE_HAND_OVER = 6;
+}
+
+// SeatStatus is a player's participation in the current hand.
+enum SeatStatus {
+  SEAT_STATUS_UNSPECIFIED = 0;
+  SEAT_STATUS_ACTIVE = 1;       // still in the hand and able to act
+  SEAT_STATUS_FOLDED = 2;
+  SEAT_STATUS_ALLIN = 3;        // committed entire stack, cannot act further
+  SEAT_STATUS_SITTING_OUT = 4;  // no chips / waiting for next hand
+}
+
+message Seat {
+  int32 seat_index = 1;
+  string user_id = 2;
+  int64 stack = 3;             // chips behind (not yet in the pot)
+  int64 committed = 4;         // chips committed in the CURRENT betting round
+  int64 total_committed = 5;   // chips committed over the whole hand (for side pots)
+  repeated int32 hole_cards = 6;
+  SeatStatus status = 7;
+  bool has_acted = 8;          // acted since the last aggressive action this round
+}
+
+message Pot {
+  int64 amount = 1;
+  repeated int32 eligible_seats = 2; // seat indices allowed to win this pot
+}
+
+message HandResult {
+  map<int32, int64> payouts = 1;   // seat_index -> chips won
+  repeated int32 board = 2;
+  // per-seat best-hand description shown at showdown; empty for fold wins.
+  map<int32, string> hand_descriptions = 3;
+  repeated int32 shown_seats = 4;  // seats whose hole cards are revealed
+}
+
+message TableState {
+  int32 hand_no = 1;
+  Stage stage = 2;
+  repeated Seat seats = 3;
+  repeated int32 deck = 4;      // remaining deck; deal from the front
+  repeated int32 board = 5;     // community cards
+  int32 button = 6;             // seat index of the dealer button
+  int32 current_turn = 7;       // seat index to act; -1 if none
+  int64 small_blind = 8;
+  int64 big_blind = 9;
+  int64 current_bet = 10;       // highest per-player commitment this round
+  int64 min_raise = 11;         // minimum legal raise increment
+  int32 last_aggressor = 12;    // seat index of last bet/raise; -1 if none
+  repeated Pot pots = 13;       // computed at showdown
+  HandResult result = 14;       // populated once stage == STAGE_HAND_OVER
+}

@@ -1,6 +1,7 @@
 package http
 
 import (
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -48,9 +49,29 @@ func serverConfigFromViper(v *viper.Viper) *ServerConfig {
 			RedirectURL:  v.GetString(ViperSubsetKey + ".google_oauth.redirect_url"),
 		},
 		CORS: CORSConfig{
-			AllowedOrigins: v.GetStringSlice(ViperSubsetKey + ".cors.allowed_origins"),
+			AllowedOrigins: splitAndTrim(v.GetString(ViperSubsetKey + ".cors.allowed_origins")),
 		},
 	}
+}
+
+// splitAndTrim splits a comma-separated string into a slice, trimming spaces
+// and dropping empty entries. viper's GetStringSlice splits values sourced from
+// env vars on whitespace rather than commas, so we parse the raw string here to
+// honor the documented comma-separated CORS_ALLOWED_ORIGINS format.
+func splitAndTrim(s string) []string {
+	if s == "" {
+		return nil
+	}
+
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+
+	return out
 }
 
 func (sc *ServerConfig) isProduction() bool {
