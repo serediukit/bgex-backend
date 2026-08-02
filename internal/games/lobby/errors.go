@@ -13,4 +13,5 @@ var (
 	ErrUnknownGame      = errors.New("unknown game")
 	ErrInvalidSeat      = errors.New("invalid seat index")
 	ErrNotSeated        = errors.New("you are not seated in this lobby")
+	ErrInvalidConfig    = errors.New("invalid game configuration")
 )

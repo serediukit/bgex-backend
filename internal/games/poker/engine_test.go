@@ -63,7 +63,7 @@ func totalChips(ts *pb.TableState) int64 {
 func TestInitStatePostsBlinds(t *testing.T) {
 	e := New()
 	inits, _ := seats(3, 1000)
-	state, _, err := e.InitState(inits)
+	state, _, err := e.InitState(t.Context(), nil, inits)
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestInitStatePostsBlinds(t *testing.T) {
 func TestFoldToWin(t *testing.T) {
 	e := New()
 	inits, _ := seats(3, 1000)
-	state, _, err := e.InitState(inits)
+	state, _, err := e.InitState(t.Context(), nil, inits)
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestFoldToWin(t *testing.T) {
 func TestHeadsUpCheckDownToShowdown(t *testing.T) {
 	e := New()
 	inits, _ := seats(2, 1000)
-	state, _, err := e.InitState(inits)
+	state, _, err := e.InitState(t.Context(), nil, inits)
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestReturnUncalledBet(t *testing.T) {
 func TestNextHandRotatesButton(t *testing.T) {
 	e := New()
 	inits, _ := seats(3, 1000)
-	state, _, err := e.InitState(inits)
+	state, _, err := e.InitState(t.Context(), nil, inits)
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}

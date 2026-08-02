@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/serediukit/bgex-backend/internal/games/engine"
 	"github.com/serediukit/bgex-backend/internal/httpx/middleware"
 	"github.com/serediukit/bgex-backend/internal/httpx/response"
 )
@@ -35,9 +36,10 @@ func (h *Handler) Register(authMiddleware gin.HandlerFunc) func(r *gin.RouterGro
 }
 
 type createReq struct {
-	GameKey  string `json:"game_key"`
-	Name     string `json:"name"`
-	MaxSeats int    `json:"max_seats"`
+	GameKey  string         `json:"game_key"`
+	Name     string         `json:"name"`
+	MaxSeats int            `json:"max_seats"`
+	Config   map[string]any `json:"config"`
 }
 
 func (h *Handler) create(c *gin.Context) {
@@ -50,7 +52,7 @@ func (h *Handler) create(c *gin.Context) {
 		req.GameKey = "poker"
 	}
 	userID := middleware.UserIDFrom(c.Request.Context())
-	lob, err := h.svc.Create(c.Request.Context(), userID, req.GameKey, req.Name, req.MaxSeats)
+	lob, err := h.svc.Create(c.Request.Context(), userID, req.GameKey, req.Name, req.MaxSeats, req.Config)
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -161,7 +163,15 @@ func (h *Handler) handleError(c *gin.Context, err error) {
 		response.Error(c, http.StatusConflict, response.CodeConflict, err.Error())
 	case errors.Is(err, ErrForbidden):
 		response.Error(c, http.StatusForbidden, response.CodeForbidden, err.Error())
-	case errors.Is(err, ErrInvalidSeat), errors.Is(err, ErrNotEnoughPlayers), errors.Is(err, ErrUnknownGame), errors.Is(err, ErrNotSeated):
+	case errors.Is(err, ErrInvalidSeat), errors.Is(err, ErrNotEnoughPlayers), errors.Is(err, ErrUnknownGame), errors.Is(err, ErrNotSeated), errors.Is(err, ErrInvalidConfig):
+		response.Error(c, http.StatusBadRequest, response.CodeInvalidRequest, err.Error())
+	// A game's ResignHandler (e.g. TTR's Session.Resign, called from Leave)
+	// can surface its own engine-level sentinels for cases
+	// resignFromInProgressGame doesn't swallow. These are all client-facing
+	// "that request doesn't make sense right now" conditions, not server
+	// failures, so they map to a 4xx rather than falling into the default
+	// 500 below.
+	case errors.Is(err, engine.ErrGameOver), errors.Is(err, engine.ErrNotSeated), errors.Is(err, engine.ErrIllegalAction), errors.Is(err, engine.ErrWrongPhase), errors.Is(err, engine.ErrNotYourTurn):
 		response.Error(c, http.StatusBadRequest, response.CodeInvalidRequest, err.Error())
 	default:
 		response.Error(c, http.StatusInternalServerError, response.CodeInternal, "internal error")

@@ -2,6 +2,7 @@ package lobby
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -34,19 +35,48 @@ func NewRepository(pool *pgxpool.Pool) *Repository { return &Repository{pool: po
 // Pool exposes the underlying pool for callers that need to manage a tx.
 func (r *Repository) Pool() *pgxpool.Pool { return r.pool }
 
-// InsertLobby creates a lobby row and returns it (without seats).
-func (r *Repository) InsertLobby(ctx context.Context, q execer, gameKey, name string, hostID uuid.UUID, maxSeats int) (*Lobby, error) {
+// InsertLobby creates a lobby row and returns it (without seats). config may
+// be nil, in which case an empty JSON object is stored.
+func (r *Repository) InsertLobby(ctx context.Context, q execer, gameKey, name string, hostID uuid.UUID, maxSeats int, config map[string]any) (*Lobby, error) {
+	if config == nil {
+		config = map[string]any{}
+	}
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		return nil, fmt.Errorf("marshal lobby config: %w", err)
+	}
+
 	var l Lobby
+	var rawConfig []byte
 	row := q.QueryRow(ctx,
-		`INSERT INTO game_lobbies (game_key, name, host_id, max_seats)
-		 VALUES ($1, $2, $3, $4)
-		 RETURNING id, game_key, name, host_id, status, max_seats, created_at, updated_at`,
-		gameKey, name, hostID, maxSeats,
+		`INSERT INTO game_lobbies (game_key, name, host_id, max_seats, config)
+		 VALUES ($1, $2, $3, $4, $5)
+		 RETURNING id, game_key, name, host_id, status, max_seats, config, created_at, updated_at`,
+		gameKey, name, hostID, maxSeats, configJSON,
 	)
-	if err := row.Scan(&l.ID, &l.GameKey, &l.Name, &l.HostID, &l.Status, &l.MaxSeats, &l.CreatedAt, &l.UpdatedAt); err != nil {
+	if err := row.Scan(&l.ID, &l.GameKey, &l.Name, &l.HostID, &l.Status, &l.MaxSeats, &rawConfig, &l.CreatedAt, &l.UpdatedAt); err != nil {
 		return nil, fmt.Errorf("insert lobby: %w", err)
 	}
+	if err := unmarshalConfig(rawConfig, &l.Config); err != nil {
+		return nil, err
+	}
 	return &l, nil
+}
+
+// unmarshalConfig decodes a JSONB config column into dst, defaulting to an
+// empty (non-nil) map so lobby config is never serialized as null.
+func unmarshalConfig(raw []byte, dst *map[string]any) error {
+	*dst = map[string]any{}
+	if len(raw) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(raw, dst); err != nil {
+		return fmt.Errorf("unmarshal lobby config: %w", err)
+	}
+	if *dst == nil {
+		*dst = map[string]any{}
+	}
+	return nil
 }
 
 // ClaimSeat inserts an active seat. It maps unique-index violations to the
@@ -124,16 +154,20 @@ func (r *Repository) SetHost(ctx context.Context, lobbyID, hostID uuid.UUID) err
 // Get loads a lobby with its active seats (enriched with player profiles).
 func (r *Repository) Get(ctx context.Context, lobbyID uuid.UUID) (*Lobby, error) {
 	var l Lobby
+	var rawConfig []byte
 	row := r.pool.QueryRow(ctx,
-		`SELECT id, game_key, name, host_id, status, max_seats, created_at, updated_at
+		`SELECT id, game_key, name, host_id, status, max_seats, config, created_at, updated_at
 		 FROM game_lobbies WHERE id = $1`,
 		lobbyID,
 	)
-	if err := row.Scan(&l.ID, &l.GameKey, &l.Name, &l.HostID, &l.Status, &l.MaxSeats, &l.CreatedAt, &l.UpdatedAt); err != nil {
+	if err := row.Scan(&l.ID, &l.GameKey, &l.Name, &l.HostID, &l.Status, &l.MaxSeats, &rawConfig, &l.CreatedAt, &l.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("get lobby: %w", err)
+	}
+	if err := unmarshalConfig(rawConfig, &l.Config); err != nil {
+		return nil, err
 	}
 
 	rows, err := r.pool.Query(ctx,
@@ -152,8 +186,8 @@ func (r *Repository) Get(ctx context.Context, lobbyID uuid.UUID) (*Lobby, error)
 
 	for rows.Next() {
 		var (
-			s                              Seat
-			username, displayName, avatar  *string
+			s                             Seat
+			username, displayName, avatar *string
 		)
 		if err := rows.Scan(&s.SeatIndex, &s.UserID, &s.Stack, &s.Status, &username, &displayName, &avatar); err != nil {
 			return nil, fmt.Errorf("scan seat: %w", err)
@@ -181,7 +215,7 @@ func (r *Repository) Get(ctx context.Context, lobbyID uuid.UUID) (*Lobby, error)
 // List returns open lobbies for a game (waiting or in progress), newest first.
 func (r *Repository) List(ctx context.Context, gameKey string) ([]ListItem, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT l.id, l.game_key, l.name, l.status, l.host_id, l.max_seats, l.created_at,
+		`SELECT l.id, l.game_key, l.name, l.status, l.host_id, l.max_seats, l.config, l.created_at,
 		        COUNT(s.id) FILTER (WHERE s.status = 'active') AS seat_count
 		 FROM game_lobbies l
 		 LEFT JOIN game_seats s ON s.lobby_id = l.id
@@ -198,8 +232,12 @@ func (r *Repository) List(ctx context.Context, gameKey string) ([]ListItem, erro
 	var items []ListItem
 	for rows.Next() {
 		var it ListItem
-		if err := rows.Scan(&it.ID, &it.GameKey, &it.Name, &it.Status, &it.HostID, &it.MaxSeats, &it.CreatedAt, &it.SeatCount); err != nil {
+		var rawConfig []byte
+		if err := rows.Scan(&it.ID, &it.GameKey, &it.Name, &it.Status, &it.HostID, &it.MaxSeats, &rawConfig, &it.CreatedAt, &it.SeatCount); err != nil {
 			return nil, fmt.Errorf("scan lobby: %w", err)
+		}
+		if err := unmarshalConfig(rawConfig, &it.Config); err != nil {
+			return nil, err
 		}
 		items = append(items, it)
 	}

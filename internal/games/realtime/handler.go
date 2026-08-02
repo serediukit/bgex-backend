@@ -93,14 +93,28 @@ func (h *Handler) serveWS(c *gin.Context) {
 	go client.writePump()
 
 	// Send the joining client the current state, and let others see them arrive.
-	h.broadcastState(context.Background(), lobbyID)
+	h.broadcastStateWithTimeout(lobbyID)
 
 	client.readPump(func(msg ClientMessage) {
 		h.onMessage(client, msg)
 	})
 
 	h.hub.Unregister(lobbyID, client)
-	h.broadcastState(context.Background(), lobbyID)
+	h.broadcastStateWithTimeout(lobbyID)
+}
+
+// broadcastStateWithTimeout calls broadcastState with a bounded context, the
+// same opTimeout deadline onMessage already applies to every action. Unlike
+// onMessage's call sites, serveWS has no request context of its own to
+// derive from (the WebSocket's lifetime long outlives any one HTTP request),
+// so context.Background() is the right root — but it still needs a
+// deadline: for TTR each call does two DB queries per viewer, and an
+// undeadlined context.Background() call could hang indefinitely against a
+// stalled database.
+func (h *Handler) broadcastStateWithTimeout(lobbyID uuid.UUID) {
+	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	defer cancel()
+	h.broadcastState(ctx, lobbyID)
 }
 
 func (h *Handler) onMessage(c *Client, msg ClientMessage) {
@@ -113,16 +127,27 @@ func (h *Handler) onMessage(c *Client, msg ClientMessage) {
 		if gs == nil {
 			return
 		}
-		handOver, err := gs.Apply(ctx, c.lobbyID, engine.Action{
-			UserID: c.userID, Type: msg.Action, Amount: msg.Amount,
+		events, over, err := gs.Apply(ctx, c.lobbyID, engine.Action{
+			UserID: c.userID, Type: msg.Action, Amount: msg.Amount, Payload: msg.Payload,
 		})
 		if err != nil {
 			c.sendJSON(ServerMessage{Type: "error", Error: err.Error()})
 			return
 		}
+		// Events first, in the engine's own causal order, then the resulting
+		// state — so a client's log panel always reads "what happened" before
+		// "where things ended up".
+		h.broadcastEvents(c.lobbyID, events)
 		h.broadcastState(ctx, c.lobbyID)
-		if handOver {
-			h.scheduleNextHand(c.lobbyID, c.gameKey)
+		if over {
+			if hb, ok := gs.(HandBasedGameService); ok {
+				h.scheduleNextHand(c.lobbyID, hb)
+			} else {
+				// Non-hand-based games (e.g. TTR) emit their own "game_over"
+				// event as part of Apply's events when the game concludes;
+				// finishGame must not also synthesize one in that case.
+				h.finishGame(ctx, c.lobbyID, hasGameOverEvent(events))
+			}
 		}
 
 	case "sit":
@@ -156,30 +181,73 @@ func (h *Handler) onMessage(c *Client, msg ClientMessage) {
 
 // scheduleNextHand deals the next hand after a short delay so players can see
 // the showdown, then broadcasts the fresh state (or finishes the game).
-func (h *Handler) scheduleNextHand(lobbyID uuid.UUID, gameKey string) {
+func (h *Handler) scheduleNextHand(lobbyID uuid.UUID, gs HandBasedGameService) {
 	time.AfterFunc(handOverDelay, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 		defer cancel()
 
-		gs := h.games[gameKey]
-		if gs == nil {
-			return
-		}
-		finished, err := gs.NextHand(ctx, lobbyID)
+		events, finished, err := gs.NextHand(ctx, lobbyID)
 		if err != nil {
 			h.log.WithError(err).WithField("lobby", lobbyID).Warn("deal next hand failed")
 			return
 		}
 		if finished {
-			if err := h.lobbies.Finish(ctx, lobbyID); err != nil {
-				h.log.WithError(err).Warn("finish lobby failed")
-			}
-			h.hub.Broadcast(lobbyID, func(uuid.UUID) any {
-				return ServerMessage{Type: "event", Event: &engine.Event{Type: "game_over"}}
-			})
+			// Hand-based games (poker) have no engine-level "game_over" event
+			// of their own — finishGame's synthesized one is authoritative here.
+			h.finishGame(ctx, lobbyID, false)
+			return
 		}
+		h.broadcastEvents(lobbyID, events)
 		h.broadcastState(ctx, lobbyID)
 	})
+}
+
+// finishGame marks a lobby finished (no more hands/turns possible), tells
+// everyone watching, and pushes the final lobby/game state. alreadyAnnounced
+// is true when the caller already broadcast an engine-emitted "game_over"
+// event for this same conclusion (TTR's engine emits its own); in that case
+// finishGame does not synthesize a second one.
+func (h *Handler) finishGame(ctx context.Context, lobbyID uuid.UUID, alreadyAnnounced bool) {
+	if err := h.lobbies.Finish(ctx, lobbyID); err != nil {
+		// Error, not Warn: a failure here leaves the lobby stuck at
+		// "in_progress" while the engine's own state has already
+		// concluded. Every player's subsequent DELETE .../seats then hits
+		// the game's ResignHandler, which lobby.Service now treats as a
+		// no-op (see lobby.Service.resignFromInProgressGame) rather than a
+		// hard failure, so players can still leave — but the lobby itself
+		// stays visibly "in_progress" to anyone browsing/joining until an
+		// operator notices this log line. Silently swallowing it at Warn
+		// made this exact failure mode invisible in production.
+		h.log.WithError(err).WithField("lobby_id", lobbyID).Error("finish lobby failed: lobby will remain in_progress")
+	}
+	if !alreadyAnnounced {
+		h.hub.Broadcast(lobbyID, func(uuid.UUID) any {
+			return ServerMessage{Type: "event", Event: &engine.Event{Type: "game_over"}}
+		})
+	}
+	h.broadcastState(ctx, lobbyID)
+}
+
+// broadcastEvents pushes each engine event to every subscriber of lobbyID, in
+// the order given, ahead of the resulting state broadcast.
+func (h *Handler) broadcastEvents(lobbyID uuid.UUID, events []engine.Event) {
+	for i := range events {
+		ev := events[i]
+		h.hub.Broadcast(lobbyID, func(uuid.UUID) any {
+			return ServerMessage{Type: "event", Event: &ev}
+		})
+	}
+}
+
+// hasGameOverEvent reports whether events already includes a "game_over"
+// entry emitted by the engine itself.
+func hasGameOverEvent(events []engine.Event) bool {
+	for _, ev := range events {
+		if ev.Type == "game_over" {
+			return true
+		}
+	}
+	return false
 }
 
 // broadcastState pushes the lobby snapshot plus each viewer's redacted game view
@@ -193,11 +261,16 @@ func (h *Handler) broadcastState(ctx context.Context, lobbyID uuid.UUID) {
 		return
 	}
 	gs := h.games[lob.GameKey]
-	inProgress := lob.Status == "in_progress"
+	// A finished lobby's game_states row (and ttr.game_results) still
+	// exists and View still works on it — the final scores are only ever
+	// readable through this same redacted View. Excluding "finished" here
+	// made the results screen unreachable: any client connecting (or any
+	// broadcast happening) after the game ended got the lobby only, forever.
+	hasGame := lob.Status == "in_progress" || lob.Status == "finished"
 
 	h.hub.Broadcast(lobbyID, func(userID uuid.UUID) any {
 		msg := ServerMessage{Type: "state", Lobby: lob}
-		if inProgress && gs != nil {
+		if hasGame && gs != nil {
 			if view, err := gs.View(ctx, lobbyID, userID); err == nil {
 				msg.Game = view
 			}

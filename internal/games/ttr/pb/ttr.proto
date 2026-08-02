@@ -1,0 +1,99 @@
+syntax = "proto3";
+package bgex.ttr.v1;
+option go_package = "github.com/serediukit/bgex-backend/internal/games/ttr/pb;ttrpb";
+
+// Color is a train-card colour or a route colour. GRAY is route-only, LOCO is
+// card-only (rules §3.3).
+enum Color {
+  COLOR_UNSPECIFIED = 0;
+  COLOR_PURPLE = 1; COLOR_BLUE = 2; COLOR_ORANGE = 3; COLOR_WHITE = 4;
+  COLOR_GREEN  = 5; COLOR_YELLOW = 6; COLOR_BLACK = 7; COLOR_RED = 8;
+  COLOR_GRAY   = 9; COLOR_LOCO  = 10;
+}
+
+// Phase drives the state machine. AWAITING_* phases are pending decisions
+// (plan Q9); NORMAL means the current player picks one of the four actions.
+enum Phase {
+  PHASE_UNSPECIFIED = 0;
+  PHASE_SETUP_TICKETS = 1;        // §5.7 simultaneous keep, min 2
+  PHASE_NORMAL = 2;               // §6
+  PHASE_AWAITING_SECOND_DRAW = 3; // §7.1 mid-draw, one card taken
+  PHASE_AWAITING_TUNNEL = 4;      // §8.4 surcharge decision
+  PHASE_AWAITING_TICKET_KEEP = 5; // §9 keep >= 1
+  PHASE_SCORING = 6;
+  PHASE_FINISHED = 7;
+}
+
+message PlayerState {
+  int32  seat_index = 1;
+  string user_id = 2;
+  map<int32, int32> hand = 3;        // Color(int) -> count, includes COLOR_LOCO
+  repeated int32 ticket_ids = 4;     // secret
+  int32  trains_left = 5;            // starts 45 (§3.1)
+  int32  stations_left = 6;          // starts 3
+  int32  route_score = 7;            // running, routes only (§13.1)
+  repeated int32 claimed_route_ids = 8;
+  repeated string station_cities = 9;
+  bool   resigned = 10;              // plan Q14
+  repeated int32 setup_ticket_offer = 11; // §5 dealt 4, cleared after keep
+  bool   setup_done = 12;
+}
+
+// PendingTunnel holds a committed base payment awaiting the §8.4 surcharge
+// decision. Revealed cards are NOT shown to other players until resolution.
+message PendingTunnel {
+  int32 route_id = 1;
+  map<int32, int32> base_payment = 2; // Color -> count actually spent
+  Color payment_color = 3;            // non-loco colour used, or COLOR_LOCO
+  repeated int32 revealed = 4;        // Color values, 0..3 cards
+  int32 surcharge = 5;                // number of extra cards required
+}
+
+// PendingTicketDraw holds the 3 drawn tickets awaiting a §9 keep decision.
+message PendingTicketDraw {
+  repeated int32 offered_ticket_ids = 1;
+}
+
+message DrawProgress {
+  int32 cards_taken = 1;              // 0..2 this turn
+  bool  face_up_loco_locked = 2;      // §7.2 after first card is taken
+}
+
+message ScoreBreakdown {
+  int32 seat_index = 1;
+  int32 route_points = 2;
+  int32 tickets_completed_points = 3;
+  int32 tickets_missed_points = 4;    // positive magnitude, subtracted
+  int32 station_bonus = 5;            // 4 * unbuilt (§13.5)
+  int32 longest_path_bonus = 6;       // 10 or 0 (§13.3)
+  int32 longest_path_length = 7;
+  int32 total = 8;
+  int32 rank = 9;
+  repeated int32 completed_ticket_ids = 10;
+  repeated int32 missed_ticket_ids = 11;
+  // station city -> borrowed opponent route id chosen by the optimizer (§13.4)
+  map<string, int32> borrowed_routes = 12;
+  bool shared_victory = 13;           // §13.6.5
+}
+
+message GameState {
+  string map_id = 1;
+  int32  map_version = 2;
+  Phase  phase = 3;
+  repeated PlayerState players = 4;
+  int32  current_seat = 5;
+  repeated int32 draw_pile = 6;       // Color values, draw from front (secret)
+  repeated int32 discard_pile = 7;    // (secret ordering)
+  repeated int32 face_up = 8;         // exactly 5 unless exhausted (§14)
+  repeated int32 ticket_deck = 9;     // ticket ids, draw front, reject to back
+  map<int32, int32> route_owner = 10; // route_id -> seat_index
+  repeated int32 closed_routes = 11;  // §8.5 2–3p sibling closure
+  map<string, int32> station_owner = 12; // city id -> seat_index
+  int32  final_turns_left = 13;       // -1 until triggered (§11)
+  DrawProgress draw = 14;
+  PendingTunnel pending_tunnel = 15;
+  PendingTicketDraw pending_ticket_draw = 16;
+  repeated ScoreBreakdown results = 17; // populated in PHASE_FINISHED
+  int64  seq = 18;                    // monotonic action counter
+  int32  turn_no = 19;
+}

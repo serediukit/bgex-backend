@@ -84,6 +84,8 @@ Wire the domain into `internal/app/app.go` (the composition root).
 
 Game engines live under `internal/games/<game>/` — separate concern from REST domains.
 
+`internal/games/engine.Engine` and `internal/games/realtime.GameService` are the two seams every game implements. Both are now "slim" — no hand/redeal concept baked in — with `HandBased` / `HandBasedGameService` as **optional** interfaces layered on top: `poker.Engine`/`poker.Session` implement them (a poker table deals a new hand after each one finishes); `ttr.Engine`/`ttr.Session` deliberately do not (a TTR lobby plays exactly one game to a final score, so `realtime.Handler` finishes the lobby instead of redealing when a game doesn't implement `HandBasedGameService`). A new game only needs `HandBased` if it, too, is a series of independent hands.
+
 ## API routes (current)
 
 | Method | Path | Auth |
@@ -99,12 +101,31 @@ Game engines live under `internal/games/<game>/` — separate concern from REST 
 | GET | `/api/v1/users/me` | bearer |
 | PATCH | `/api/v1/users/me` | bearer |
 | GET | `/api/v1/users/:id` | — |
+| POST | `/api/v1/games/lobbies` | bearer |
+| GET | `/api/v1/games/lobbies` | bearer |
+| GET | `/api/v1/games/lobbies/current` | bearer |
+| GET | `/api/v1/games/lobbies/:id` | bearer |
+| POST | `/api/v1/games/lobbies/:id/seats` | bearer |
+| DELETE | `/api/v1/games/lobbies/:id/seats` | bearer |
+| POST | `/api/v1/games/lobbies/:id/start` | bearer |
+| GET | `/api/v1/games/lobbies/:id/ws` | bearer (`?token=`) |
+| GET | `/api/v1/games/ttr/maps` | bearer |
+| GET | `/api/v1/games/ttr/maps/:ref` | bearer |
+| GET | `/api/v1/games/ttr/assets/:id` | — |
+| GET | `/api/v1/admin/ttr/maps` | bearer + admin |
+| POST | `/api/v1/admin/ttr/maps` | bearer + admin |
+| GET | `/api/v1/admin/ttr/maps/:id/versions/:version` | bearer + admin |
+| PUT | `/api/v1/admin/ttr/maps/:id/draft` | bearer + admin |
+| POST | `/api/v1/admin/ttr/maps/:id/versions/:version/publish` | bearer + admin |
+| POST | `/api/v1/admin/ttr/assets` | bearer + admin |
 
 `:id` accepts a UUID or a username — the handler tries `uuid.Parse` first, falls back to username lookup.
 
+`games/ttr/maps/:ref` accepts a slug or a UUID; `?version=N` pins a specific **published** version (default: latest published). `games/ttr/assets/:id` is deliberately unauthenticated — its content is content-addressed and immutable (served with `Cache-Control: public, max-age=31536000, immutable` and an `ETag`, honoring `If-None-Match` with 304), so a bare `<image>` tag can load it without a token.
+
 New routes go under `/api/v1/<domain>` and are registered via the `RouteRegistrar` func type in `internal/httpx/router.go`.
 
-**Route registration:** pass `authMiddleware` inline per route (`users.GET("/me", authMiddleware, h.me)`) rather than `group.Use(authMiddleware)` — two groups at the same prefix with `Use` on one silently drops routes from Gin's radix tree.
+**Route registration:** pass `authMiddleware` inline per route (`users.GET("/me", authMiddleware, h.me)`) rather than `group.Use(authMiddleware)` — two groups at the same prefix with `Use` on one silently drops routes from Gin's radix tree. Admin routes carry **both** `authMiddleware` and `adminMiddleware` inline, in that order.
 
 ## Auth model
 
@@ -119,6 +140,30 @@ New routes go under `/api/v1/<domain>` and are registered via the `RouteRegistra
 - Nullable text columns in Go are `*string` in scan targets, then unpacked into plain strings on the model.
 - Migrations: `make migrate-new name=<slug>` creates the pair; always write a `.down.sql`.
 - Unique constraint violations for known columns are mapped to domain sentinel errors (e.g. `user.ErrEmailTaken`).
+- Migration numbering is sequential 4-digit (`0001`, `0002`, …). Current head is `0008_seed_ttr_europe_map`; the next migration is **`0009`**.
+
+### `ttr` schema (Ticket to Ride)
+
+Migration `0006_add_ttr_schema` creates a dedicated `ttr` Postgres schema, mirroring the `poker` schema pattern (per-game hot state lives in its own schema; down migration is `DROP SCHEMA ttr CASCADE`):
+
+| Table | Purpose |
+|-------|---------|
+| `ttr.maps` | A board definition (slug, name, official flag). |
+| `ttr.map_versions` | Immutable-once-published `(map_id, version)` rows; `doc JSONB` holds the full map document (`rules` + `layout`); `status` is `draft` or `published`. A lobby pins `(map_id, version)` at Start so later edits can't affect a running game. |
+| `ttr.map_assets` | Content-addressed background images (`bytes BYTEA`, `sha256`), max 4 MB, `image/png`/`image/jpeg`/`image/webp` only. |
+| `ttr.game_states` | Hot state: `state BYTEA` (protobuf), `version` bumped on every mutation under `SELECT ... FOR UPDATE` — same contract as `poker.game_states`. FK's `(map_id, map_version)` to `ttr.map_versions`. |
+| `ttr.action_log` | `(lobby_id, seq)` append-only JSONB action log for replay/debug. |
+| `ttr.game_results` | Final per-seat scoring breakdown (JSONB), one row per player per finished lobby. |
+
+### Admin role
+
+Migration `0007_add_user_role` adds `users.role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user','admin'))` plus a partial index on admins. `middleware.RequireAdmin` (chained **after** `middleware.RequireAuth`) gates admin-only routes.
+
+There is no self-service admin promotion. Promote the first admin manually via SQL:
+
+```sql
+UPDATE users SET role = 'admin' WHERE email = 'you@example.com';
+```
 
 ## Error response shape
 

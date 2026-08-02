@@ -26,6 +26,10 @@ const (
 type ErrorBody struct {
 	Code    ErrorCode `json:"code"`
 	Message string    `json:"message"`
+	// Details carries itemized, per-field problems (e.g. map document
+	// validation errors) for callers that need more than a single message.
+	// Omitted entirely for every existing call site that doesn't set it.
+	Details []any `json:"details,omitempty"`
 }
 
 type errorEnvelope struct {
@@ -50,6 +54,13 @@ func NoContent(c *gin.Context) {
 // Error writes a structured error response and aborts the request.
 func Error(c *gin.Context, status int, code ErrorCode, msg string) {
 	c.AbortWithStatusJSON(status, errorEnvelope{Error: ErrorBody{Code: code, Message: msg}})
+}
+
+// ErrorWithDetails writes a structured error response carrying an
+// additional itemized "details" payload (e.g. per-field validation errors)
+// and aborts the request.
+func ErrorWithDetails(c *gin.Context, status int, code ErrorCode, msg string, details []any) {
+	c.AbortWithStatusJSON(status, errorEnvelope{Error: ErrorBody{Code: code, Message: msg, Details: details}})
 }
 
 // APIError is a typed error that handlers/middleware can return.

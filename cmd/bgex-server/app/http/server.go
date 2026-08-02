@@ -16,6 +16,7 @@ import (
 	"github.com/serediukit/bgex-backend/internal/games/lobby"
 	"github.com/serediukit/bgex-backend/internal/games/poker"
 	"github.com/serediukit/bgex-backend/internal/games/realtime"
+	"github.com/serediukit/bgex-backend/internal/games/ttr"
 	"github.com/serediukit/bgex-backend/internal/httpx"
 	"github.com/serediukit/bgex-backend/internal/httpx/middleware"
 	"github.com/serediukit/bgex-backend/pkg/logger"
@@ -59,17 +60,35 @@ func NewServer(ctx context.Context, r *app.Runner) (*http.Server, error) {
 	pokerEngine := poker.New()
 	pokerSession := poker.NewSession(r.DB, poker.NewStateRepo(), pokerEngine)
 
-	engines := engine.NewRegistry(pokerEngine)
+	// --- games: ticket to ride ---
+	ttrMapRepo := ttr.NewMapRepo(r.DB)
+	ttrMapCache := ttr.NewMapCache(ttrMapRepo)
+	ttrEngine := ttr.New(ttrMapCache)
+	ttrSession := ttr.NewSession(r.DB, ttr.NewStateRepo(), ttrEngine, ttrMapCache, ttrMapRepo)
+	ttrHandler := ttr.NewMapHandler(ttrMapRepo, ttrMapCache)
+	ttrAdmin := ttr.NewAdminHandler(ttrMapRepo, ttrMapCache)
+
+	engines := engine.NewRegistry(pokerEngine, ttrEngine)
 	lobbyRepo := lobby.NewRepository(r.DB)
-	lobbySvc := lobby.NewService(lobbyRepo, engines, map[string]lobby.GameInitializer{
-		poker.GameKey: pokerSession,
-	})
+	lobbySvc := lobby.NewService(lobbyRepo, engines,
+		map[string]lobby.GameInitializer{
+			poker.GameKey: pokerSession,
+			ttr.GameKey:   ttrSession,
+		},
+		map[string]lobby.ConfigValidator{
+			ttr.GameKey: ttrSession,
+		},
+		map[string]lobby.ResignHandler{
+			ttr.GameKey: ttrSession,
+		},
+	)
 	lobbyHandler := lobby.NewHandler(lobbySvc)
 
 	hub := realtime.NewHub()
-	realtimeHandler := realtime.NewHandler(authSvc, lobbySvc, hub, log.Logger, pokerSession)
+	realtimeHandler := realtime.NewHandler(authSvc, lobbySvc, hub, log.Logger, pokerSession, ttrSession)
 
 	authMW := middleware.RequireAuth(authSvc)
+	adminMW := middleware.RequireAdmin(userRepo) // userRepo satisfies middleware.RoleLookup
 
 	router := httpx.NewRouter(httpx.RouterOptions{
 		Logger:         log.Logger,
@@ -86,6 +105,8 @@ func NewServer(ctx context.Context, r *app.Runner) (*http.Server, error) {
 			friendsHandler.Register(authMW),
 			lobbyHandler.Register(authMW),
 			realtimeHandler.Register(authMW),
+			ttrHandler.Register(authMW),
+			ttrAdmin.Register(authMW, adminMW),
 		},
 	})
 

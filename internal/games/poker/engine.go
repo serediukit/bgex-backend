@@ -10,6 +10,7 @@
 package poker
 
 import (
+	"context"
 	"fmt"
 
 	"google.golang.org/protobuf/proto"
@@ -57,8 +58,9 @@ func unmarshal(state []byte) (*pb.TableState, error) {
 	return &ts, nil
 }
 
-// InitState builds the first-hand state for the seated players.
-func (e *Engine) InitState(seats []engine.SeatInit) ([]byte, []engine.Event, error) {
+// InitState builds the first-hand state for the seated players. Poker has no
+// per-lobby configuration, so ctx and cfg are ignored.
+func (e *Engine) InitState(_ context.Context, _ map[string]any, seats []engine.SeatInit) ([]byte, []engine.Event, error) {
 	if len(seats) < minSeats {
 		return nil, nil, engine.ErrNotEnoughPlayers
 	}
@@ -372,4 +374,9 @@ func (e *Engine) IsHandOver(state []byte) bool {
 	}
 	return ts.Stage == pb.Stage_STAGE_HAND_OVER
 }
+
+// IsOver always reports false: poker tables never end from the engine's point
+// of view (a hand ending is reported by IsHandOver) — the lobby decides when
+// a table can no longer field enough players and finishes it.
+func (e *Engine) IsOver(state []byte) bool { return false }
 

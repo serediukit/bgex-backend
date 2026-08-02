@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/google/uuid"
@@ -16,6 +18,15 @@ var (
 	ErrIllegalAction = errors.New("illegal action")
 	// ErrNotEnoughPlayers is returned when a hand cannot start.
 	ErrNotEnoughPlayers = errors.New("not enough players")
+	// ErrGameOver is returned when an action is attempted after the game has
+	// already ended.
+	ErrGameOver = errors.New("game is over")
+	// ErrNotSeated is returned when the acting user does not occupy a seat in
+	// this game.
+	ErrNotSeated = errors.New("you are not seated in this game")
+	// ErrWrongPhase is returned when an action is not valid in the state's
+	// current phase (e.g. resolving a decision that isn't pending).
+	ErrWrongPhase = errors.New("action not valid in the current phase")
 )
 
 // SeatInit describes a player taking part in a hand at engine start.
@@ -32,6 +43,9 @@ type Action struct {
 	UserID uuid.UUID
 	Type   string
 	Amount int64
+	// Payload is a game-specific action payload; ignored by games that only
+	// need Type/Amount.
+	Payload json.RawMessage
 }
 
 // Event is a discrete, non-secret thing that happened, suitable for broadcast
@@ -50,25 +64,39 @@ type Engine interface {
 	// MinSeats / MaxSeats bound how many players a table supports.
 	MinSeats() int
 	MaxSeats() int
-	// DefaultBuyIn is the starting chip stack handed to each seat.
-	DefaultBuyIn() int64
 
-	// InitState creates the first-hand state for the given seated players.
-	InitState(seats []SeatInit) (state []byte, events []Event, err error)
-	// NextHand advances a finished hand to a fresh one, carrying stacks over and
-	// rotating the button. Returns ErrNotEnoughPlayers if fewer than MinSeats
-	// players still have chips.
-	NextHand(state []byte) (next []byte, events []Event, err error)
+	// InitState creates the initial state for the given seated players. cfg is
+	// the lobby's game-specific configuration (e.g. TTR resolves its pinned
+	// map from cfg); poker ignores both ctx and cfg.
+	InitState(ctx context.Context, cfg map[string]any, seats []SeatInit) (state []byte, events []Event, err error)
 
 	// Apply validates and applies a player action, returning the new state and
 	// any broadcastable events.
 	Apply(state []byte, a Action) (next []byte, events []Event, err error)
 
 	// View returns a JSON-serializable, per-player redacted projection of the
-	// state (a player must not see opponents' hidden cards).
+	// state (a player must not see opponents' hidden information).
 	View(state []byte, forUser uuid.UUID) (any, error)
 
-	// IsHandOver reports whether the current hand has completed (showdown or
-	// everyone-but-one folded), so the caller can archive it and deal the next.
+	// IsOver reports whether the game itself has concluded (as opposed to a
+	// single hand, see HandBased.IsHandOver).
+	IsOver(state []byte) bool
+}
+
+// HandBased is implemented by games played as a series of independent hands
+// (poker). Games with a single continuous game (TTR) do not implement it.
+type HandBased interface {
+	DefaultBuyIn() int64
+	NextHand(state []byte) (next []byte, events []Event, err error)
 	IsHandOver(state []byte) bool
+}
+
+// BuyInFor returns the starting stack for a seat joining e's lobby: the
+// hand-based default buy-in when e implements HandBased, or 0 for games (like
+// TTR) with no chip stacks.
+func BuyInFor(e Engine) int64 {
+	if hb, ok := e.(HandBased); ok {
+		return hb.DefaultBuyIn()
+	}
+	return 0
 }

@@ -30,8 +30,10 @@ func NewSession(pool *pgxpool.Pool, repo *StateRepo, eng *Engine) *Session {
 func (s *Session) GameKey() string { return GameKey }
 
 // InitGameState persists the freshly-built initial state (lobby.GameInitializer).
-func (s *Session) InitGameState(ctx context.Context, tx pgx.Tx, lobbyID uuid.UUID, state []byte, handNo int32) error {
-	return s.repo.Insert(ctx, tx, lobbyID, state, handNo)
+// config is ignored: poker has no lobby-level configuration, and every table
+// starts at hand 1.
+func (s *Session) InitGameState(ctx context.Context, tx pgx.Tx, lobbyID uuid.UUID, state []byte, _ map[string]any) error {
+	return s.repo.Insert(ctx, tx, lobbyID, state, 1)
 }
 
 // View returns the redacted table view for a viewer.
@@ -44,64 +46,64 @@ func (s *Session) View(ctx context.Context, lobbyID, userID uuid.UUID) (any, err
 }
 
 // Apply runs one action atomically against the locked state.
-func (s *Session) Apply(ctx context.Context, lobbyID uuid.UUID, action engine.Action) (handOver bool, err error) {
+func (s *Session) Apply(ctx context.Context, lobbyID uuid.UUID, action engine.Action) (events []engine.Event, handOver bool, err error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return false, fmt.Errorf("begin tx: %w", err)
+		return nil, false, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
 	state, handNo, _, err := s.repo.GetForUpdate(ctx, tx, lobbyID)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
-	next, _, err := s.eng.Apply(state, action)
+	next, events, err := s.eng.Apply(state, action)
 	if err != nil {
-		return false, err // validation error surfaces to the client
+		return nil, false, err // validation error surfaces to the client
 	}
 	if err := s.repo.Update(ctx, tx, lobbyID, next, handNo); err != nil {
-		return false, err
+		return nil, false, err
 	}
 	over := s.eng.IsHandOver(next)
 	if over {
 		if err := s.repo.InsertHistory(ctx, tx, lobbyID, handNo, next); err != nil {
-			return false, err
+			return nil, false, err
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("commit tx: %w", err)
+		return nil, false, fmt.Errorf("commit tx: %w", err)
 	}
-	return over, nil
+	return events, over, nil
 }
 
 // NextHand deals the next hand once the current one is over. It returns
 // finished=true when the table can no longer field enough players.
-func (s *Session) NextHand(ctx context.Context, lobbyID uuid.UUID) (finished bool, err error) {
+func (s *Session) NextHand(ctx context.Context, lobbyID uuid.UUID) (events []engine.Event, finished bool, err error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return false, fmt.Errorf("begin tx: %w", err)
+		return nil, false, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
 	state, handNo, _, err := s.repo.GetForUpdate(ctx, tx, lobbyID)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
 	if !s.eng.IsHandOver(state) {
-		return false, nil // already advanced by a concurrent trigger
+		return nil, false, nil // already advanced by a concurrent trigger
 	}
-	next, _, err := s.eng.NextHand(state)
+	next, events, err := s.eng.NextHand(state)
 	if err != nil {
 		if errors.Is(err, engine.ErrNotEnoughPlayers) {
-			return true, nil
+			return nil, true, nil
 		}
-		return false, err
+		return nil, false, err
 	}
 	if err := s.repo.Update(ctx, tx, lobbyID, next, handNo+1); err != nil {
-		return false, err
+		return nil, false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("commit tx: %w", err)
+		return nil, false, fmt.Errorf("commit tx: %w", err)
 	}
-	return false, nil
+	return events, false, nil
 }

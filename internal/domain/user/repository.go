@@ -30,7 +30,7 @@ func NewRepository(pool *pgxpool.Pool) *Repository {
 }
 
 // userColumns must match scanRow's Scan call exactly.
-const userColumns = "id, email, password_hash, username, display_name, avatar_url, bio, country, email_verified, created_at, updated_at"
+const userColumns = "id, email, password_hash, username, display_name, avatar_url, bio, country, role, email_verified, created_at, updated_at"
 
 func (r *Repository) GetByID(ctx context.Context, id uuid.UUID) (*User, error) {
 	query, args, err := r.sb.Select(userColumns).From("users").Where(sq.Eq{"id": id}).ToSql()
@@ -141,6 +141,19 @@ func (r *Repository) GetPasswordHash(ctx context.Context, id uuid.UUID) (string,
 	return *hash, nil
 }
 
+// GetRole returns a user's role ('user' or 'admin').
+func (r *Repository) GetRole(ctx context.Context, id uuid.UUID) (string, error) {
+	var role string
+	err := r.pool.QueryRow(ctx, `SELECT role FROM users WHERE id = $1`, id).Scan(&role)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrNotFound
+		}
+		return "", err
+	}
+	return role, nil
+}
+
 func (r *Repository) scanOne(ctx context.Context, query string, args []any) (*User, error) {
 	row := r.pool.QueryRow(ctx, query, args...)
 	u, err := scanRow(row)
@@ -169,7 +182,7 @@ func scanRow(row rowScanner) (*User, error) {
 	)
 	if err := row.Scan(
 		&u.ID, &u.Email, &passwordHash,
-		&username, &displayName, &avatarURL, &bio, &country,
+		&username, &displayName, &avatarURL, &bio, &country, &u.Role,
 		&u.EmailVerified, &u.CreatedAt, &u.UpdatedAt,
 	); err != nil {
 		return nil, err
