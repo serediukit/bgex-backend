@@ -377,6 +377,38 @@ func TestParseMap(t *testing.T) {
 			},
 			wantErrPath: "$",
 		},
+		{
+			name: "route offset 0.006 accepted",
+			mutate: func(doc map[string]any) {
+				route1 := must[map[string]any](must[map[string]any](layoutOf(doc)["routes"])["1"])
+				route1["offset"] = 0.006
+			},
+			wantOK: true,
+		},
+		{
+			name: "route bend 0.1 accepted",
+			mutate: func(doc map[string]any) {
+				route1 := must[map[string]any](must[map[string]any](layoutOf(doc)["routes"])["1"])
+				route1["bend"] = 0.1
+			},
+			wantOK: true,
+		},
+		{
+			name: "route offset 0.5 rejected",
+			mutate: func(doc map[string]any) {
+				route1 := must[map[string]any](must[map[string]any](layoutOf(doc)["routes"])["1"])
+				route1["offset"] = 0.5
+			},
+			wantErrPath: "$.layout.routes.1.offset",
+		},
+		{
+			name: "route bend -1 rejected",
+			mutate: func(doc map[string]any) {
+				route1 := must[map[string]any](must[map[string]any](layoutOf(doc)["routes"])["1"])
+				route1["bend"] = -1
+			},
+			wantErrPath: "$.layout.routes.1.bend",
+		},
 		// The plan's literal ticket-count bullet ("exactly 6 long + 40
 		// regular") is Europe-specific, not a property of every map: a
 		// custom map's ticket deck is data the map author supplies, the

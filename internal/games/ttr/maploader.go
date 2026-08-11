@@ -382,6 +382,18 @@ func validateLayoutRoutes(m *Map) ValidationErrors {
 			errs = append(errs, validateUnitInterval(fmt.Sprintf("$.layout.routes.%s.slots[%d].x", key, si), s.X)...)
 			errs = append(errs, validateUnitInterval(fmt.Sprintf("$.layout.routes.%s.slots[%d].y", key, si), s.Y)...)
 		}
+		if lr.Offset < -0.2 || lr.Offset > 0.2 {
+			errs = append(errs, ValidationError{
+				Path:    fmt.Sprintf("$.layout.routes.%s.offset", key),
+				Message: fmt.Sprintf("must be in [-0.2, 0.2], got %v", lr.Offset),
+			})
+		}
+		if lr.Bend < -0.5 || lr.Bend > 0.5 {
+			errs = append(errs, ValidationError{
+				Path:    fmt.Sprintf("$.layout.routes.%s.bend", key),
+				Message: fmt.Sprintf("must be in [-0.5, 0.5], got %v", lr.Bend),
+			})
+		}
 	}
 	return errs
 }

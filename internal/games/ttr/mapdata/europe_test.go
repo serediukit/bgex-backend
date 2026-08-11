@@ -371,6 +371,20 @@ func containsLiteral(s, substr string) bool {
 	return indexOf(s, substr) >= 0
 }
 
+// countLiteral returns the number of non-overlapping occurrences of substr
+// in s.
+func countLiteral(s, substr string) int {
+	count := 0
+	for from := 0; ; {
+		i := indexOf(s[from:], substr)
+		if i < 0 {
+			return count
+		}
+		count++
+		from += i + len(substr)
+	}
+}
+
 // migrationPath resolves the absolute path to a file under the repo's
 // migrations/ directory, relative to this test file's own location
 // (internal/games/ttr/mapdata/), so it works regardless of the test

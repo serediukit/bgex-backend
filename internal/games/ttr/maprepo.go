@@ -2,6 +2,7 @@ package ttr
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -229,7 +230,7 @@ func (r *MapRepo) CreateMap(ctx context.Context, slug, name string, createdBy uu
 // concurrent forks against each other the same way, so the max(version)+1
 // computed inside this transaction is guaranteed unique when the INSERT
 // runs.
-func (r *MapRepo) UpsertDraft(ctx context.Context, mapID uuid.UUID, doc []byte) (int32, error) {
+func (r *MapRepo) UpsertDraft(ctx context.Context, mapID uuid.UUID, doc []byte, validated bool) (int32, error) {
 	sha := DocSHA256(doc)
 
 	tx, err := r.pool.Begin(ctx)
@@ -246,9 +247,9 @@ func (r *MapRepo) UpsertDraft(ctx context.Context, mapID uuid.UUID, doc []byte) 
 	switch {
 	case err == nil:
 		tag, uerr := tx.Exec(ctx,
-			`UPDATE ttr.map_versions SET doc = $3, doc_sha256 = $4, updated_at = now()
+			`UPDATE ttr.map_versions SET doc = $3, doc_sha256 = $4, validated = $5, updated_at = now()
 			 WHERE map_id = $1 AND version = $2 AND status = 'draft'`,
-			mapID, draftVersion, doc, sha,
+			mapID, draftVersion, doc, sha, validated,
 		)
 		if uerr != nil {
 			return 0, fmt.Errorf("update draft version %s@%d: %w", mapID, draftVersion, uerr)
@@ -272,9 +273,9 @@ func (r *MapRepo) UpsertDraft(ctx context.Context, mapID uuid.UUID, doc []byte) 
 			return 0, fmt.Errorf("compute next version for map %s: %w", mapID, nerr)
 		}
 		if _, ierr := tx.Exec(ctx,
-			`INSERT INTO ttr.map_versions (map_id, version, status, doc, doc_sha256)
-			 VALUES ($1, $2, 'draft', $3, $4)`,
-			mapID, next, doc, sha,
+			`INSERT INTO ttr.map_versions (map_id, version, status, doc, doc_sha256, validated)
+			 VALUES ($1, $2, 'draft', $3, $4, $5)`,
+			mapID, next, doc, sha, validated,
 		); ierr != nil {
 			return 0, fmt.Errorf("insert draft version %s@%d: %w", mapID, next, ierr)
 		}
@@ -293,8 +294,14 @@ func (r *MapRepo) UpsertDraft(ctx context.Context, mapID uuid.UUID, doc []byte) 
 // asked to mutate one — is rejected with ErrVersionPublished instead of
 // silently no-op'ing.
 func (r *MapRepo) Publish(ctx context.Context, mapID uuid.UUID, version int32) error {
+	// The 'draft'/'published' literals below are SQL, not Go — they're never
+	// compared against a Go value in this statement — so they stay inline
+	// rather than routing through mapVersionStatusPublished, matching every
+	// other status literal in this file's queries. mapVersionStatusPublished
+	// itself still exists (see its doc comment) purely because maphandler.go
+	// and adminhandler.go compare a decoded status string against it in Go.
 	tag, err := r.pool.Exec(ctx,
-		`UPDATE ttr.map_versions SET status = 'published', published_at = now(), updated_at = now()
+		`UPDATE ttr.map_versions SET status = 'published', validated = TRUE, published_at = now(), updated_at = now()
 		 WHERE map_id = $1 AND version = $2 AND status = 'draft'`,
 		mapID, version,
 	)
@@ -329,6 +336,71 @@ func (r *MapRepo) GetVersion(ctx context.Context, mapID uuid.UUID, version int32
 		return "", nil, fmt.Errorf("get map version %s@%d: %w", mapID, version, err)
 	}
 	return status, doc, nil
+}
+
+// MapVersionSummary is a lightweight projection of a ttr.map_versions row —
+// everything the admin "versions" list needs except the (potentially large)
+// doc itself.
+type MapVersionSummary struct {
+	Version     int32      `json:"version"`
+	Status      string     `json:"status"`
+	Validated   bool       `json:"validated"`
+	PublishedAt *time.Time `json:"published_at"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+// ListVersions returns every version of mapID, newest first.
+func (r *MapRepo) ListVersions(ctx context.Context, mapID uuid.UUID) ([]MapVersionSummary, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT version, status, validated, published_at, created_at, updated_at
+		 FROM ttr.map_versions WHERE map_id = $1 ORDER BY version DESC`,
+		mapID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list versions for map %s: %w", mapID, err)
+	}
+	defer rows.Close()
+
+	var out []MapVersionSummary
+	for rows.Next() {
+		var v MapVersionSummary
+		if err := rows.Scan(&v.Version, &v.Status, &v.Validated, &v.PublishedAt, &v.CreatedAt, &v.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan version summary for map %s: %w", mapID, err)
+		}
+		out = append(out, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate version summaries for map %s: %w", mapID, err)
+	}
+	return out, nil
+}
+
+// MapVersionDoc is the full admin-editing projection of one (map, version)
+// pair — the document plus the metadata the editor needs to badge it.
+type MapVersionDoc struct {
+	Version   int32           `json:"version"`
+	Status    string          `json:"status"`
+	Validated bool            `json:"validated"`
+	Doc       json.RawMessage `json:"doc"`
+}
+
+// GetVersionDoc returns the full admin-editing projection of one (map,
+// version), or ErrMapVersionNotFound if no such row exists.
+func (r *MapRepo) GetVersionDoc(ctx context.Context, mapID uuid.UUID, version int32) (*MapVersionDoc, error) {
+	var v MapVersionDoc
+	v.Version = version
+	err := r.pool.QueryRow(ctx,
+		`SELECT status, validated, doc FROM ttr.map_versions WHERE map_id = $1 AND version = $2`,
+		mapID, version,
+	).Scan(&v.Status, &v.Validated, &v.Doc)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrMapVersionNotFound
+		}
+		return nil, fmt.Errorf("get map version doc %s@%d: %w", mapID, version, err)
+	}
+	return &v, nil
 }
 
 // InsertAsset stores a content-addressed background image and returns its

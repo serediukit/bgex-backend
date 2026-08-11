@@ -133,6 +133,10 @@ type LayoutCity struct {
 }
 
 // Slot is one normalized (0..1) train-car space drawn along a route.
+//
+// Angle is pixel-space degrees in schema_version 1 documents authored from
+// Europe v2 onward, but normalized-space degrees in the immutable
+// europe.v1.json. Do not "fix" v1.
 type Slot struct {
 	X     float64 `json:"x"`
 	Y     float64 `json:"y"`
@@ -140,9 +144,18 @@ type Slot struct {
 }
 
 // LayoutRoute is a route's drawn train-car slots. len(Slots) must equal the
-// corresponding Route.Length.
+// corresponding Route.Length. Offset and Bend are the generator inputs the
+// visual editor used to produce Slots; Slots remains the rendered truth.
 type LayoutRoute struct {
 	Slots []Slot `json:"slots"`
+	// Offset is the perpendicular lane displacement used to generate Slots,
+	// as a fraction of Layout.ViewBox.Width. Zero (absent) means centred on
+	// the straight line between the two cities. Double-route siblings
+	// conventionally take -0.006 / +0.006.
+	Offset float64 `json:"offset,omitempty"`
+	// Bend is the quadratic-arc height used to generate Slots, as a fraction
+	// of the route's pixel length. Zero (absent) means a straight route.
+	Bend float64 `json:"bend,omitempty"`
 }
 
 // SlotStyle is the shared normalized size/shape used to draw every slot.

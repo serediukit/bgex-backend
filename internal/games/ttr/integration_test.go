@@ -83,6 +83,7 @@ func TestIntegration_MapRepoAndStateRepo(t *testing.T) {
 	checkDraftImmutability(t, ctx, mapRepo, summary.ID, v1)
 	checkLoaderAndListing(t, ctx, mapRepo, summary.ID, slug, v1)
 	checkAssetRoundTrip(t, ctx, pool, mapRepo, user1)
+	checkValidatedFlag(t, ctx, mapRepo, pool, user1)
 
 	// --- Engine: build real initial state pinned to (summary.ID, v1) via
 	// MapCache, exercising MapRepo.LoadDoc through the same MapLoader path
@@ -111,7 +112,7 @@ func checkUpsertDraftAndPublish(t *testing.T, ctx context.Context, mapRepo *MapR
 	// migration 0008 seeds as the official map) — reusing it here means the
 	// engine round-trip later runs against genuine board data instead of a
 	// hand-rolled fixture.
-	v1, err := mapRepo.UpsertDraft(ctx, mapID, mapdata.EuropeV1)
+	v1, err := mapRepo.UpsertDraft(ctx, mapID, mapdata.EuropeV1, true)
 	if err != nil {
 		t.Fatalf("UpsertDraft: %v", err)
 	}
@@ -145,7 +146,7 @@ func checkUpsertDraftAndPublish(t *testing.T, ctx context.Context, mapRepo *MapR
 func checkDraftImmutability(t *testing.T, ctx context.Context, mapRepo *MapRepo, mapID uuid.UUID, v1 int32) {
 	t.Helper()
 
-	v2, err := mapRepo.UpsertDraft(ctx, mapID, mapdata.EuropeV1)
+	v2, err := mapRepo.UpsertDraft(ctx, mapID, mapdata.EuropeV1, true)
 	if err != nil {
 		t.Fatalf("UpsertDraft (2nd): %v", err)
 	}
@@ -155,7 +156,7 @@ func checkDraftImmutability(t *testing.T, ctx context.Context, mapRepo *MapRepo,
 
 	modifiedDoc := append([]byte(nil), mapdata.EuropeV1...)
 	modifiedDoc = append(modifiedDoc, '\n') // trivially different bytes; UpsertDraft does not validate map JSON
-	v3, err := mapRepo.UpsertDraft(ctx, mapID, modifiedDoc)
+	v3, err := mapRepo.UpsertDraft(ctx, mapID, modifiedDoc, true)
 	if err != nil {
 		t.Fatalf("UpsertDraft (3rd): %v", err)
 	}
@@ -257,6 +258,180 @@ func checkAssetRoundTrip(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 	}
 	if mime != "image/png" || string(data) != string(assetBytes) {
 		t.Fatalf("GetAsset: round-trip mismatch")
+	}
+}
+
+// checkValidatedFlag proves the safety property migration 0009 exists for:
+// ttr.map_versions.validated defaults to TRUE, so if UpsertDraft's INSERT or
+// UPDATE ever silently dropped the validated argument from its column list,
+// an unvalidated (structurally broken) draft would fall back to the default
+// and become publishable — defeating the whole point of ?validate=false.
+// This is the one assertion in the suite that would notice.
+//
+// Covers: validated=false and validated=true both round-trip through
+// GetVersionDoc (false is the assertion that matters; true is exercised
+// alongside it so the round-trip isn't vacuously true); Publish
+// unconditionally flips validated to true and status to published;
+// GetVersionDoc's Doc, Version and Status are all correct and Doc is
+// compared as parsed JSON (JSONB does not preserve bytes); GetVersionDoc
+// reports ErrMapVersionNotFound for a version that was never created; and
+// ListVersions returns every version of the map newest-first with the
+// correct per-row Status/Validated.
+//
+// Runs against its own throwaway map — created and cleaned up exactly like
+// the map in TestIntegration_MapRepoAndStateRepo's outer setup — rather than
+// reusing mapID/v1 from the caller, so it cannot disturb the version
+// numbering checkUpsertDraftAndPublish/checkDraftImmutability already
+// asserted on. Split into per-case helpers purely to keep this function's
+// own cyclomatic complexity down.
+func checkValidatedFlag(t *testing.T, ctx context.Context, mapRepo *MapRepo, pool *pgxpool.Pool, createdBy uuid.UUID) {
+	t.Helper()
+
+	slug := "ttr-itest-validated-" + uuid.NewString()[:8]
+	summary, err := mapRepo.CreateMap(ctx, slug, "Validated Flag Test Map", createdBy)
+	if err != nil {
+		t.Fatalf("CreateMap: %v", err)
+	}
+	mapID := summary.ID
+	t.Cleanup(func() {
+		if _, err := pool.Exec(context.Background(), `DELETE FROM ttr.maps WHERE id = $1`, mapID); err != nil {
+			t.Logf("cleanup: delete map %s: %v", mapID, err)
+		}
+	})
+
+	vFalse := checkUpsertDraftFalseRoundTrip(t, ctx, mapRepo, mapID)
+	vTrue := checkUpsertDraftTrueRoundTrip(t, ctx, mapRepo, mapID, vFalse)
+	vPub := checkPublishFlipsValidated(t, ctx, mapRepo, mapID, vTrue)
+	checkGetVersionDocNotFound(t, ctx, mapRepo, mapID, vPub)
+	checkListVersionsNewestFirst(t, ctx, mapRepo, mapID, vPub)
+}
+
+// checkUpsertDraftFalseRoundTrip confirms UpsertDraft(validated=false)
+// round-trips through GetVersionDoc — the assertion that matters for
+// migration 0009's safety property (see checkValidatedFlag).
+func checkUpsertDraftFalseRoundTrip(t *testing.T, ctx context.Context, mapRepo *MapRepo, mapID uuid.UUID) int32 {
+	t.Helper()
+
+	vFalse, err := mapRepo.UpsertDraft(ctx, mapID, mapdata.EuropeV1, false)
+	if err != nil {
+		t.Fatalf("UpsertDraft(validated=false): %v", err)
+	}
+	if vFalse != 1 {
+		t.Fatalf("UpsertDraft(validated=false): got version %d, want 1 (first version for a new map)", vFalse)
+	}
+	docFalse, err := mapRepo.GetVersionDoc(ctx, mapID, vFalse)
+	if err != nil {
+		t.Fatalf("GetVersionDoc(%d) after UpsertDraft(validated=false): %v", vFalse, err)
+	}
+	if docFalse.Validated {
+		t.Fatalf("GetVersionDoc(%d).Validated = true, want false — UpsertDraft was called with validated=false", vFalse)
+	}
+	if docFalse.Status != "draft" {
+		t.Fatalf("GetVersionDoc(%d).Status = %q, want draft", vFalse, docFalse.Status)
+	}
+	if docFalse.Version != vFalse {
+		t.Fatalf("GetVersionDoc(%d).Version = %d, want %d", vFalse, docFalse.Version, vFalse)
+	}
+	assertJSONEqual(t, fmt.Sprintf("GetVersionDoc(%d).Doc", vFalse), docFalse.Doc, mapdata.EuropeV1)
+	return vFalse
+}
+
+// checkUpsertDraftTrueRoundTrip confirms UpsertDraft(validated=true) flips
+// the same (still-draft) row back to validated=true, proving GetVersionDoc
+// actually reflects what was last written rather than e.g. always reporting
+// the column's DEFAULT TRUE — i.e. that the false case above isn't vacuous.
+func checkUpsertDraftTrueRoundTrip(t *testing.T, ctx context.Context, mapRepo *MapRepo, mapID uuid.UUID, vFalse int32) int32 {
+	t.Helper()
+
+	vTrue, err := mapRepo.UpsertDraft(ctx, mapID, mapdata.EuropeV1, true)
+	if err != nil {
+		t.Fatalf("UpsertDraft(validated=true): %v", err)
+	}
+	if vTrue != vFalse {
+		t.Fatalf("UpsertDraft(validated=true): got version %d, want %d (overwrite the existing draft row in place)", vTrue, vFalse)
+	}
+	docTrue, err := mapRepo.GetVersionDoc(ctx, mapID, vTrue)
+	if err != nil {
+		t.Fatalf("GetVersionDoc(%d) after UpsertDraft(validated=true): %v", vTrue, err)
+	}
+	if !docTrue.Validated {
+		t.Fatalf("GetVersionDoc(%d).Validated = false, want true — UpsertDraft was called with validated=true", vTrue)
+	}
+	return vTrue
+}
+
+// checkPublishFlipsValidated confirms Publish unconditionally flips
+// validated to true and status to published. Re-drafts as validated=false
+// first so the assertion isn't trivially satisfied by the caller's prior
+// UpsertDraft(true).
+func checkPublishFlipsValidated(t *testing.T, ctx context.Context, mapRepo *MapRepo, mapID uuid.UUID, vTrue int32) int32 {
+	t.Helper()
+
+	vPub, err := mapRepo.UpsertDraft(ctx, mapID, mapdata.EuropeV1, false)
+	if err != nil {
+		t.Fatalf("UpsertDraft(validated=false, pre-publish): %v", err)
+	}
+	if vPub != vTrue {
+		t.Fatalf("UpsertDraft(pre-publish): got version %d, want %d (overwrite the existing draft row in place)", vPub, vTrue)
+	}
+	if err := mapRepo.Publish(ctx, mapID, vPub); err != nil {
+		t.Fatalf("Publish(%d): %v", vPub, err)
+	}
+	published, err := mapRepo.GetVersionDoc(ctx, mapID, vPub)
+	if err != nil {
+		t.Fatalf("GetVersionDoc(%d) after Publish: %v", vPub, err)
+	}
+	if !published.Validated {
+		t.Fatalf("GetVersionDoc(%d).Validated = false after Publish, want true — Publish must unconditionally set validated = TRUE", vPub)
+	}
+	if published.Status != mapVersionStatusPublished {
+		t.Fatalf("GetVersionDoc(%d).Status = %q after Publish, want %q", vPub, published.Status, mapVersionStatusPublished)
+	}
+	assertJSONEqual(t, fmt.Sprintf("GetVersionDoc(%d).Doc after Publish", vPub), published.Doc, mapdata.EuropeV1)
+	return vPub
+}
+
+// checkGetVersionDocNotFound confirms GetVersionDoc reports
+// ErrMapVersionNotFound for a version that was never created.
+func checkGetVersionDocNotFound(t *testing.T, ctx context.Context, mapRepo *MapRepo, mapID uuid.UUID, vPub int32) {
+	t.Helper()
+
+	if _, err := mapRepo.GetVersionDoc(ctx, mapID, vPub+100); !errors.Is(err, ErrMapVersionNotFound) {
+		t.Fatalf("GetVersionDoc(nonexistent version): got %v, want ErrMapVersionNotFound", err)
+	}
+}
+
+// checkListVersionsNewestFirst confirms ListVersions returns every version
+// of the map newest-first with the correct per-row Status/Validated. vPub is
+// published+validated; forking one more draft (validated=true, the default
+// validate path) over it gives two rows to check the ordering with.
+func checkListVersionsNewestFirst(t *testing.T, ctx context.Context, mapRepo *MapRepo, mapID uuid.UUID, vPub int32) {
+	t.Helper()
+
+	vDraft2, err := mapRepo.UpsertDraft(ctx, mapID, mapdata.EuropeV1, true)
+	if err != nil {
+		t.Fatalf("UpsertDraft (second draft, post-publish): %v", err)
+	}
+	if vDraft2 != vPub+1 {
+		t.Fatalf("UpsertDraft (second draft, post-publish): got version %d, want %d (max(version)+1, since %d is now published)", vDraft2, vPub+1, vPub)
+	}
+
+	versions, err := mapRepo.ListVersions(ctx, mapID)
+	if err != nil {
+		t.Fatalf("ListVersions: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("ListVersions: got %d versions, want 2", len(versions))
+	}
+	if versions[0].Version != vDraft2 || versions[1].Version != vPub {
+		t.Fatalf("ListVersions: order = [%d, %d], want newest first [%d, %d]",
+			versions[0].Version, versions[1].Version, vDraft2, vPub)
+	}
+	if versions[0].Status != "draft" || !versions[0].Validated {
+		t.Fatalf("ListVersions[0] (v%d): Status=%q Validated=%v, want draft/true", versions[0].Version, versions[0].Status, versions[0].Validated)
+	}
+	if versions[1].Status != mapVersionStatusPublished || !versions[1].Validated {
+		t.Fatalf("ListVersions[1] (v%d): Status=%q Validated=%v, want %s/true", versions[1].Version, versions[1].Status, versions[1].Validated, mapVersionStatusPublished)
 	}
 }
 

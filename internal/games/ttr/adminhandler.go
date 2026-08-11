@@ -20,17 +20,31 @@ import (
 	"github.com/serediukit/bgex-backend/internal/httpx/response"
 )
 
+// mapAdminReader is the read half of mapAdminRepo: lookups that never
+// mutate a map or its versions.
+type mapAdminReader interface {
+	ListAll(ctx context.Context) ([]MapSummary, error)
+	GetBySlugOrID(ctx context.Context, ref string) (*MapSummary, error)
+	ListVersions(ctx context.Context, mapID uuid.UUID) ([]MapVersionSummary, error)
+	GetVersionDoc(ctx context.Context, mapID uuid.UUID, version int32) (*MapVersionDoc, error)
+}
+
+// mapAdminWriter is the write half of mapAdminRepo: everything that creates
+// or mutates a map, a version, or an asset.
+type mapAdminWriter interface {
+	CreateMap(ctx context.Context, slug, name string, createdBy uuid.UUID) (*MapSummary, error)
+	UpsertDraft(ctx context.Context, mapID uuid.UUID, doc []byte, validated bool) (int32, error)
+	Publish(ctx context.Context, mapID uuid.UUID, version int32) error
+	InsertAsset(ctx context.Context, mime string, data []byte, sha string, by uuid.UUID) (uuid.UUID, error)
+}
+
 // mapAdminRepo is the subset of *MapRepo that AdminHandler needs. As with
 // mapReader (maphandler.go), this narrow interface lets
 // maphandler_test.go stub it without a live Postgres instance; production
 // wiring goes through NewAdminHandler(*MapRepo, *MapCache).
 type mapAdminRepo interface {
-	ListAll(ctx context.Context) ([]MapSummary, error)
-	CreateMap(ctx context.Context, slug, name string, createdBy uuid.UUID) (*MapSummary, error)
-	GetVersion(ctx context.Context, mapID uuid.UUID, version int32) (status string, doc []byte, err error)
-	UpsertDraft(ctx context.Context, mapID uuid.UUID, doc []byte) (int32, error)
-	Publish(ctx context.Context, mapID uuid.UUID, version int32) error
-	InsertAsset(ctx context.Context, mime string, data []byte, sha string, by uuid.UUID) (uuid.UUID, error)
+	mapAdminReader
+	mapAdminWriter
 }
 
 // AdminHandler exposes the TTR map-authoring REST routes under
@@ -53,6 +67,8 @@ func (h *AdminHandler) Register(authMiddleware, adminMiddleware gin.HandlerFunc)
 		g := r.Group("/admin/ttr")
 		g.GET("/maps", authMiddleware, adminMiddleware, h.listMaps)
 		g.POST("/maps", authMiddleware, adminMiddleware, h.createMap)
+		g.GET("/maps/:id", authMiddleware, adminMiddleware, h.getMap)
+		g.GET("/maps/:id/versions", authMiddleware, adminMiddleware, h.listVersions)
 		g.GET("/maps/:id/versions/:version", authMiddleware, adminMiddleware, h.getVersion)
 		g.PUT("/maps/:id/draft", authMiddleware, adminMiddleware, h.putDraft)
 		g.POST("/maps/:id/versions/:version/publish", authMiddleware, adminMiddleware, h.publish)
@@ -112,8 +128,8 @@ func (h *AdminHandler) createMap(c *gin.Context) {
 	response.Created(c, summary)
 }
 
-// getVersion returns the status and document for one (map, version) pair,
-// draft or published.
+// getVersion returns the full admin-editing projection (status, validated,
+// document) for one (map, version) pair, draft or published.
 func (h *AdminHandler) getVersion(c *gin.Context) {
 	mapID, ok := parseIDParam(c, "id")
 	if !ok {
@@ -124,12 +140,58 @@ func (h *AdminHandler) getVersion(c *gin.Context) {
 		return
 	}
 
-	status, doc, err := h.repo.GetVersion(c.Request.Context(), mapID, version)
+	v, err := h.repo.GetVersionDoc(c.Request.Context(), mapID, version)
 	if err != nil {
 		writeMapError(c, err)
 		return
 	}
-	response.OK(c, gin.H{"status": status, "doc": json.RawMessage(doc)})
+	response.OK(c, v)
+}
+
+// getMap returns the MapSummary for a single map. Like every other admin
+// route, :id is UUID-only (parseIDParam) — the admin UI only ever navigates
+// by id (never by slug), so there is no caller that needs slug lookup here.
+// GetBySlugOrID is reused for the actual query since it already knows how to
+// look a map up by id; parseIDParam having already required a UUID just
+// means its slug branch can never be reached from this handler.
+func (h *AdminHandler) getMap(c *gin.Context) {
+	mapID, ok := parseIDParam(c, "id")
+	if !ok {
+		return
+	}
+	summary, err := h.repo.GetBySlugOrID(c.Request.Context(), mapID.String())
+	if err != nil {
+		writeMapError(c, err)
+		return
+	}
+	response.OK(c, summary)
+}
+
+// listVersions returns every version of a map, newest first. It confirms
+// the map itself exists before listing so that a bad id 404s — matching
+// getMap/getVersion — rather than returning 200 with an empty array, which
+// would be indistinguishable from "this map genuinely has no versions".
+func (h *AdminHandler) listVersions(c *gin.Context) {
+	mapID, ok := parseIDParam(c, "id")
+	if !ok {
+		return
+	}
+	ctx := c.Request.Context()
+
+	if _, err := h.repo.GetBySlugOrID(ctx, mapID.String()); err != nil {
+		writeMapError(c, err)
+		return
+	}
+
+	versions, err := h.repo.ListVersions(ctx, mapID)
+	if err != nil {
+		writeMapError(c, err)
+		return
+	}
+	if versions == nil {
+		versions = []MapVersionSummary{}
+	}
+	response.OK(c, versions)
 }
 
 // maxMapDocBytes caps a PUT draft body, mirroring uploadAsset's
@@ -150,6 +212,11 @@ func (h *AdminHandler) putDraft(c *gin.Context) {
 		return
 	}
 
+	// Any value other than the literal "false" (including an absent query
+	// param) means "validate" — this is a save-as-draft escape hatch, not a
+	// generic boolean parser.
+	validate := c.Query("validate") != "false"
+
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxMapDocBytes)
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -162,12 +229,25 @@ func (h *AdminHandler) putDraft(c *gin.Context) {
 		return
 	}
 
-	if _, perr := ParseMap(body); perr != nil {
-		writeValidationError(c, perr)
-		return
+	if validate {
+		if _, perr := ParseMap(body); perr != nil {
+			writeValidationError(c, perr)
+			return
+		}
+	} else {
+		// Skipping ParseMap still requires the body to be a syntactically
+		// valid JSON object, so nothing garbage lands in the JSONB column.
+		// A JSON literal `null` unmarshals into a nil map with a nil error,
+		// so the nil check is required alongside the error check — relying
+		// on err alone lets a `null` body through as if it were `{}`.
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(body, &obj); err != nil || obj == nil {
+			response.Error(c, http.StatusBadRequest, response.CodeInvalidRequest, "map document must be a JSON object")
+			return
+		}
 	}
 
-	version, err := h.repo.UpsertDraft(c.Request.Context(), mapID, body)
+	version, err := h.repo.UpsertDraft(c.Request.Context(), mapID, body, validate)
 	if err != nil {
 		if errors.Is(err, ErrVersionPublished) {
 			response.Error(c, http.StatusConflict, response.CodeConflict, err.Error())
@@ -176,7 +256,7 @@ func (h *AdminHandler) putDraft(c *gin.Context) {
 		response.Error(c, http.StatusInternalServerError, response.CodeInternal, "internal error")
 		return
 	}
-	response.OK(c, gin.H{"version": version})
+	response.OK(c, gin.H{"version": version, "validated": validate})
 }
 
 // publish re-validates the stored document (defence in depth — the draft
@@ -194,17 +274,17 @@ func (h *AdminHandler) publish(c *gin.Context) {
 	}
 	ctx := c.Request.Context()
 
-	status, doc, err := h.repo.GetVersion(ctx, mapID, version)
+	v, err := h.repo.GetVersionDoc(ctx, mapID, version)
 	if err != nil {
 		writeMapError(c, err)
 		return
 	}
-	if status == "published" {
+	if v.Status == mapVersionStatusPublished {
 		response.Error(c, http.StatusConflict, response.CodeConflict, ErrVersionPublished.Error())
 		return
 	}
 
-	if _, perr := ParseMap(doc); perr != nil {
+	if _, perr := ParseMap(v.Doc); perr != nil {
 		writeValidationError(c, perr)
 		return
 	}

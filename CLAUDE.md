@@ -114,12 +114,18 @@ Game engines live under `internal/games/<game>/` — separate concern from REST 
 | GET | `/api/v1/games/ttr/assets/:id` | — |
 | GET | `/api/v1/admin/ttr/maps` | bearer + admin |
 | POST | `/api/v1/admin/ttr/maps` | bearer + admin |
+| GET | `/api/v1/admin/ttr/maps/:id` | bearer + admin |
+| GET | `/api/v1/admin/ttr/maps/:id/versions` | bearer + admin |
 | GET | `/api/v1/admin/ttr/maps/:id/versions/:version` | bearer + admin |
 | PUT | `/api/v1/admin/ttr/maps/:id/draft` | bearer + admin |
 | POST | `/api/v1/admin/ttr/maps/:id/versions/:version/publish` | bearer + admin |
 | POST | `/api/v1/admin/ttr/assets` | bearer + admin |
 
 `:id` accepts a UUID or a username — the handler tries `uuid.Parse` first, falls back to username lookup.
+
+`admin/ttr/maps/:id/versions` lists every version of a map, newest first, each with `status`, `validated` and timestamps — the editor's version picker reads it.
+
+`PUT admin/ttr/maps/:id/draft` accepts **`?validate=false`**, which stores a work-in-progress document *without* running `ParseMap` and records `validated = false` on the row. The body must still be a JSON object within the size cap. This exists because a half-authored map (a handful of cities, no tickets yet) can never satisfy full validation, so without it "build a map from scratch" would mean finishing in one unbroken browser session. `publish` re-validates unconditionally, so an unvalidated draft can never be published or played. Any other value of `validate` — including absent — validates.
 
 `games/ttr/maps/:ref` accepts a slug or a UUID; `?version=N` pins a specific **published** version (default: latest published). `games/ttr/assets/:id` is deliberately unauthenticated — its content is content-addressed and immutable (served with `Cache-Control: public, max-age=31536000, immutable` and an `ETag`, honoring `If-None-Match` with 304), so a bare `<image>` tag can load it without a token.
 
@@ -140,7 +146,7 @@ New routes go under `/api/v1/<domain>` and are registered via the `RouteRegistra
 - Nullable text columns in Go are `*string` in scan targets, then unpacked into plain strings on the model.
 - Migrations: `make migrate-new name=<slug>` creates the pair; always write a `.down.sql`.
 - Unique constraint violations for known columns are mapped to domain sentinel errors (e.g. `user.ErrEmailTaken`).
-- Migration numbering is sequential 4-digit (`0001`, `0002`, …). Current head is `0008_seed_ttr_europe_map`; the next migration is **`0009`**.
+- Migration numbering is sequential 4-digit (`0001`, `0002`, …). Current head is `0010_seed_ttr_europe_map_v2`; the next migration is **`0011`**.
 
 ### `ttr` schema (Ticket to Ride)
 
@@ -149,11 +155,21 @@ Migration `0006_add_ttr_schema` creates a dedicated `ttr` Postgres schema, mirro
 | Table | Purpose |
 |-------|---------|
 | `ttr.maps` | A board definition (slug, name, official flag). |
-| `ttr.map_versions` | Immutable-once-published `(map_id, version)` rows; `doc JSONB` holds the full map document (`rules` + `layout`); `status` is `draft` or `published`. A lobby pins `(map_id, version)` at Start so later edits can't affect a running game. |
+| `ttr.map_versions` | Immutable-once-published `(map_id, version)` rows; `doc JSONB` holds the full map document (`rules` + `layout`); `status` is `draft` or `published`. `validated BOOLEAN NOT NULL DEFAULT TRUE` (migration `0009`) is `FALSE` for a work-in-progress draft saved via `?validate=false`; `publish` always re-runs `ParseMap` and sets it back to `TRUE`, so an unvalidated draft can never be published or played. A lobby pins `(map_id, version)` at Start so later edits can't affect a running game. |
 | `ttr.map_assets` | Content-addressed background images (`bytes BYTEA`, `sha256`), max 4 MB, `image/png`/`image/jpeg`/`image/webp` only. |
 | `ttr.game_states` | Hot state: `state BYTEA` (protobuf), `version` bumped on every mutation under `SELECT ... FOR UPDATE` — same contract as `poker.game_states`. FK's `(map_id, map_version)` to `ttr.map_versions`. |
 | `ttr.action_log` | `(lobby_id, seq)` append-only JSONB action log for replay/debug. |
 | `ttr.game_results` | Final per-seat scoring breakdown (JSONB), one row per player per finished lobby. |
+
+### Europe ships two published versions
+
+Migration `0008` seeds **Europe v1**; migration `0010` seeds **Europe v2**. `GET /games/ttr/maps/:ref` resolves the **latest published** version by default, so new lobbies pin **v2**.
+
+**v2** carries: 15 route-colour corrections read off the physical board, a **9th double route** (Budapest–Wien — `45` White ↔ `99` Red, mutually paired, so 99 routes total), and slot angles regenerated in **pixel space**.
+
+**v1 is immutable and stays exactly as seeded.** Its `mapdata/europe_test.go` drift-guard must keep passing, and lobbies started before v2 remain pinned to v1 forever.
+
+⚠️ **`Slot.angle` means different things across versions.** It is **pixel-space degrees** in v2 and anything authored later, but **normalized-space degrees** in `europe.v1.json` (the original convention, which the renderer applied in pixel space — that was the bug v2 fixes). `mapdata/europe_v2_test.go` asserts the pixel-space property permanently; asserting it over v1 would correctly fail. **Do not "fix" v1.**
 
 ### Admin role
 

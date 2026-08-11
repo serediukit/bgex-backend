@@ -1,0 +1,11 @@
+-- Down migration for 0010: remove the Europe v2 seed row.
+--
+-- WARNING (do not "fix" this): if any ttr.game_states row pins
+-- (map_id, map_version) = (europe, 2), this DELETE fails on the
+-- ttr.game_states foreign key, which is declared NO ACTION. golang-migrate
+-- then reports the migration as "dirty" and refuses further migrate up/down
+-- until the offending row is dealt with by hand. Migration 0008's down
+-- migration has the exact same exposure for version 1 and is deliberately
+-- left as-is (see its file) — this is a pre-existing, accepted limitation
+-- of the seed-migration approach, not something to work around here.
+DELETE FROM ttr.map_versions WHERE map_id = '00000000-0000-0000-0000-0000000000e0' AND version = 2;
