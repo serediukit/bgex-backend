@@ -16,6 +16,7 @@ import (
 	"github.com/serediukit/bgex-backend/internal/games/lobby"
 	"github.com/serediukit/bgex-backend/internal/games/poker"
 	"github.com/serediukit/bgex-backend/internal/games/realtime"
+	"github.com/serediukit/bgex-backend/internal/games/song_guess"
 	"github.com/serediukit/bgex-backend/internal/games/ttr"
 	"github.com/serediukit/bgex-backend/internal/httpx"
 	"github.com/serediukit/bgex-backend/internal/httpx/middleware"
@@ -68,24 +69,35 @@ func NewServer(ctx context.Context, r *app.Runner) (*http.Server, error) {
 	ttrHandler := ttr.NewMapHandler(ttrMapRepo, ttrMapCache)
 	ttrAdmin := ttr.NewAdminHandler(ttrMapRepo, ttrMapCache)
 
-	engines := engine.NewRegistry(pokerEngine, ttrEngine)
+	// --- games: guess the song by words ---
+	sgPackRepo := song_guess.NewPackRepo(r.DB)
+	sgPackCache := song_guess.NewPackCache(sgPackRepo)
+	sgEngine := song_guess.New(sgPackCache)
+	sgSession := song_guess.NewSession(r.DB, song_guess.NewStateRepo(), sgEngine, sgPackCache, sgPackRepo)
+	sgPackHandler := song_guess.NewPackHandler(sgPackRepo, sgPackCache)
+	sgAuthorHandler := song_guess.NewAuthorHandler(sgPackRepo, userRepo) // userRepo satisfies song_guess.RoleLookup
+
+	engines := engine.NewRegistry(pokerEngine, ttrEngine, sgEngine)
 	lobbyRepo := lobby.NewRepository(r.DB)
 	lobbySvc := lobby.NewService(lobbyRepo, engines,
 		map[string]lobby.GameInitializer{
-			poker.GameKey: pokerSession,
-			ttr.GameKey:   ttrSession,
+			poker.GameKey:      pokerSession,
+			ttr.GameKey:        ttrSession,
+			song_guess.GameKey: sgSession,
 		},
 		map[string]lobby.ConfigValidator{
-			ttr.GameKey: ttrSession,
+			ttr.GameKey:        ttrSession,
+			song_guess.GameKey: sgSession,
 		},
 		map[string]lobby.ResignHandler{
-			ttr.GameKey: ttrSession,
+			ttr.GameKey:        ttrSession,
+			song_guess.GameKey: sgSession,
 		},
 	)
 	lobbyHandler := lobby.NewHandler(lobbySvc)
 
 	hub := realtime.NewHub()
-	realtimeHandler := realtime.NewHandler(authSvc, lobbySvc, hub, log.Logger, pokerSession, ttrSession)
+	realtimeHandler := realtime.NewHandler(authSvc, lobbySvc, hub, log.Logger, pokerSession, ttrSession, sgSession)
 
 	authMW := middleware.RequireAuth(authSvc)
 	adminMW := middleware.RequireAdmin(userRepo) // userRepo satisfies middleware.RoleLookup
@@ -107,6 +119,8 @@ func NewServer(ctx context.Context, r *app.Runner) (*http.Server, error) {
 			realtimeHandler.Register(authMW),
 			ttrHandler.Register(authMW),
 			ttrAdmin.Register(authMW, adminMW),
+			sgPackHandler.Register(authMW),
+			sgAuthorHandler.Register(authMW),
 		},
 	})
 

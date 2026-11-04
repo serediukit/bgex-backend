@@ -84,7 +84,9 @@ Wire the domain into `internal/app/app.go` (the composition root).
 
 Game engines live under `internal/games/<game>/` — separate concern from REST domains.
 
-`internal/games/engine.Engine` and `internal/games/realtime.GameService` are the two seams every game implements. Both are now "slim" — no hand/redeal concept baked in — with `HandBased` / `HandBasedGameService` as **optional** interfaces layered on top: `poker.Engine`/`poker.Session` implement them (a poker table deals a new hand after each one finishes); `ttr.Engine`/`ttr.Session` deliberately do not (a TTR lobby plays exactly one game to a final score, so `realtime.Handler` finishes the lobby instead of redealing when a game doesn't implement `HandBasedGameService`). A new game only needs `HandBased` if it, too, is a series of independent hands.
+`internal/games/engine.Engine` and `internal/games/realtime.GameService` are the two seams every game implements. Both are now "slim" — no hand/redeal concept baked in — with `HandBased` / `HandBasedGameService` as **optional** interfaces layered on top: `poker.Engine`/`poker.Session` implement them (a poker table deals a new hand after each one finishes); `ttr.Engine`/`ttr.Session` and `song_guess.Engine`/`song_guess.Session` deliberately do not (a TTR lobby plays exactly one game to a final score, and a Song Guess lobby plays one pack to a final score, so `realtime.Handler` finishes the lobby instead of redealing when a game doesn't implement `HandBasedGameService`). A new game only needs `HandBased` if it, too, is a series of independent hands.
+
+**Per-viewer redaction is mandatory, and `View` is not the only surface.** `View(state, forUser)` is the sole path secret state may leave the server by — but **engine events broadcast to every subscriber including spectators and cannot be per-viewer redacted**, so event payloads need the same scrutiny as views. Song Guess learned this the hard way: `guess_submitted` originally carried the raw guess text and defeated an entire redaction decision one layer below a correct `View`. Events must carry a boolean (`has_guess`) and let the redacted `state` broadcast deliver the text.
 
 ## API routes (current)
 
@@ -120,6 +122,18 @@ Game engines live under `internal/games/<game>/` — separate concern from REST 
 | PUT | `/api/v1/admin/ttr/maps/:id/draft` | bearer + admin |
 | POST | `/api/v1/admin/ttr/maps/:id/versions/:version/publish` | bearer + admin |
 | POST | `/api/v1/admin/ttr/assets` | bearer + admin |
+| GET | `/api/v1/games/song-guess/packs` | bearer |
+| GET | `/api/v1/games/song-guess/packs/:ref` | bearer |
+| POST | `/api/v1/games/song-guess/packs` | bearer |
+| GET | `/api/v1/games/song-guess/packs/:ref/doc` | bearer + owner-or-admin |
+| GET | `/api/v1/games/song-guess/packs/:ref/versions` | bearer + owner-or-admin |
+| PUT | `/api/v1/games/song-guess/packs/:ref/draft` | bearer + owner-or-admin |
+| POST | `/api/v1/games/song-guess/packs/:ref/versions/:version/publish` | bearer + owner-or-admin |
+| DELETE | `/api/v1/games/song-guess/packs/:ref` | bearer + owner-or-admin |
+
+**Song Guess pack routes are auth-only — there is no `RequireAdmin` on this game.** Unlike the TTR map routes (which are admin-gated under `/api/v1/admin/ttr/...`), pack authoring is open to every user, with **per-row authorization in the handler**: writes and the full-document read require `created_by == caller OR caller.role == 'admin'`. A non-owner receives **404, not 403**, so the existence of someone else's draft is never confirmed. Both handlers (`packhandler.go`, `authorhandler.go`) mount the **same** `/games/song-guess` prefix with `authMiddleware` inline per route and **no `group.Use`** — see the route-registration note below for why that matters.
+
+The read routes return **summaries only** (`total_songs`, `is_even`, and per-`(language × bucket)` counts) and never a song, title, artist, block or video id: a pack document is the answer key, so any client able to fetch it has won the game. `PUT …/draft` accepts **`?validate=false`** with the same semantics as the TTR map draft route, and enforces a 512 KiB body cap either way.
 
 `:id` accepts a UUID or a username — the handler tries `uuid.Parse` first, falls back to username lookup.
 
@@ -146,7 +160,7 @@ New routes go under `/api/v1/<domain>` and are registered via the `RouteRegistra
 - Nullable text columns in Go are `*string` in scan targets, then unpacked into plain strings on the model.
 - Migrations: `make migrate-new name=<slug>` creates the pair; always write a `.down.sql`.
 - Unique constraint violations for known columns are mapped to domain sentinel errors (e.g. `user.ErrEmailTaken`).
-- Migration numbering is sequential 4-digit (`0001`, `0002`, …). Current head is `0010_seed_ttr_europe_map_v2`; the next migration is **`0011`**.
+- Migration numbering is sequential 4-digit (`0001`, `0002`, …). Current head is `0012_seed_song_guess_example_pack`; the next migration is **`0013`**. (Song Guess added two: `0011` creates the schema, `0012` seeds the official example pack.)
 
 ### `ttr` schema (Ticket to Ride)
 
@@ -170,6 +184,24 @@ Migration `0008` seeds **Europe v1**; migration `0010` seeds **Europe v2**. `GET
 **v1 is immutable and stays exactly as seeded.** Its `mapdata/europe_test.go` drift-guard must keep passing, and lobbies started before v2 remain pinned to v1 forever.
 
 ⚠️ **`Slot.angle` means different things across versions.** It is **pixel-space degrees** in v2 and anything authored later, but **normalized-space degrees** in `europe.v1.json` (the original convention, which the renderer applied in pixel space — that was the bug v2 fixes). `mapdata/europe_v2_test.go` asserts the pixel-space property permanently; asserting it over v1 would correctly fail. **Do not "fix" v1.**
+
+### `song_guess` schema (Guess the Song by Words)
+
+Migration `0011_add_song_guess_schema` creates a dedicated `song_guess` Postgres schema, following the `poker`/`ttr` pattern (down migration is `DROP SCHEMA song_guess CASCADE`):
+
+| Table | Purpose |
+|-------|---------|
+| `song_guess.packs` | A content pack (slug, name, `author_label` free-text credit, `created_by` → `users(id)`, `is_official`, `is_public`). |
+| `song_guess.pack_versions` | Immutable-once-published `(pack_id, version)` rows; `doc JSONB` holds the full pack v2 document; `status` is `draft` or `published`; `doc_sha256` and `total_songs` are denormalized for cheap listing. `validated BOOLEAN NOT NULL DEFAULT TRUE` is `FALSE` for a work-in-progress draft saved via `?validate=false`; `publish` always re-runs `ParsePack` and sets it back to `TRUE`, so an unvalidated draft can never be published or played. **Saving over a published version forks a new draft** rather than mutating it. |
+| `song_guess.game_states` | Hot state: `state BYTEA` (protobuf), `version` bumped on every mutation under `SELECT … FOR UPDATE` — same contract as `poker`/`ttr`. Carries a **composite FK `(pack_id, pack_version)` → `song_guess.pack_versions`**, which is what makes a lobby's pin undanglable: editing or deleting a pack can never affect a running or finished game. |
+| `song_guess.action_log` | `(lobby_id, seq)` append-only JSONB action log for replay/debug; `seq` is the engine's post-`Apply` value. |
+| `song_guess.game_results` | Final per-participant rows, PK `(lobby_id, seat_index)` — one row per participant **including the judge** (`team = 'none'`, `is_judge = true`, empty breakdown). |
+
+**No default pack.** Unlike TTR's `europe`, `ValidateLobbyConfig` for `song_guess` **rejects** a missing or empty `pack_id` — there is deliberately no fallback. Migration `0012` seeds an official `example-hits` pack (8 songs, 2 languages × buckets 4 and 5) purely so the list is never empty on a fresh install; it is never an implicit default.
+
+**Not `HandBased`.** `song_guess.Engine`/`song_guess.Session` deliberately do **not** implement `HandBased`/`HandBasedGameService` — a lobby plays one pack to a final score, so `realtime.Handler` finishes the lobby. The engine emits its **own** `game_over` event, which is what suppresses `realtime.Handler`'s synthesized duplicate. It is the second non-`HandBased` precedent after `ttr`.
+
+**Teams/captains/judge live in game state, not the lobby.** `game_seats` has no team concept and `lobby.Config` is write-once at create time, so the roster is a `PHASE_ROSTER` phase inside the protobuf state, mutated by host-only engine actions. `MinSeats() == 3` (two teams plus a judge), `MaxSeats() == 10` (the platform ceiling from `game_lobbies.max_seats CHECK (max_seats BETWEEN 2 AND 10)`).
 
 ### Admin role
 

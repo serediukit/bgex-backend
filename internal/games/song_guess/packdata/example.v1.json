@@ -1,0 +1,108 @@
+{
+  "packName": "Mixed Hits (example)",
+  "packAuthor": "bgex",
+  "version": 2,
+  "languages": [
+    {
+      "name": "Ukrainian",
+      "buckets": {
+        "4": [
+          {
+            "id": "ua-song-1",
+            "title": "Song Title",
+            "artist": "Band",
+            "line": ["First", "second", "third", "fourth"],
+            "youtube": {
+              "url": "https://www.youtube.com/watch?v=sgua0001xyz",
+              "startSec": 20,
+              "endSec": 30
+            }
+          },
+          {
+            "id": "ua-song-2",
+            "title": "Друга пісня",
+            "artist": "Гурт",
+            "line": ["Один", "два", "три", "чотири"]
+          }
+        ],
+        "5": [
+          {
+            "id": "ua-song-3",
+            "title": "Третя пісня",
+            "artist": "Гурт",
+            "line": ["Раз", "два", "три", "чотири", "п'ять"],
+            "youtube": {
+              "url": "https://www.youtube.com/watch?v=sgua0002xyz",
+              "startSec": 10,
+              "endSec": 25
+            }
+          },
+          {
+            "id": "ua-song-4",
+            "title": "Четверта пісня",
+            "artist": "Гурт",
+            "line": ["Ще", "одна", "коротка", "пісня", "тут"],
+            "youtube": {
+              "url": "https://www.youtube.com/watch?v=sgua0003xyz",
+              "startSec": 5,
+              "endSec": 20
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "English",
+      "buckets": {
+        "4": [
+          {
+            "id": "en-song-1",
+            "title": "Song Four",
+            "artist": "Artist A",
+            "line": ["One", "two", "three", "four"],
+            "youtube": {
+              "url": "https://www.youtube.com/watch?v=sgen0001xyz",
+              "startSec": 15,
+              "endSec": 25
+            }
+          },
+          {
+            "id": "en-song-2",
+            "title": "Song Four B",
+            "artist": "Artist B",
+            "line": ["Alpha", "Bravo", "Charlie", "Delta"],
+            "youtube": {
+              "url": "https://www.youtube.com/watch?v=sgen0002xyz",
+              "startSec": 8,
+              "endSec": 18
+            }
+          }
+        ],
+        "5": [
+          {
+            "id": "queen-bohemian",
+            "title": "Bohemian Rhapsody",
+            "artist": "Queen",
+            "line": ["Is this", "the real", "life", "or just", "fantasy"],
+            "youtube": {
+              "url": "https://www.youtube.com/watch?v=fJ9rUzIMcZQ",
+              "startSec": 49,
+              "endSec": 60
+            }
+          },
+          {
+            "id": "en-song-3",
+            "title": "Song Five B",
+            "artist": "Artist C",
+            "line": ["Is it", "really", "true", "or just", "a dream"],
+            "youtube": {
+              "url": "https://www.youtube.com/watch?v=sgen0003xyz",
+              "startSec": 30,
+              "endSec": 45
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

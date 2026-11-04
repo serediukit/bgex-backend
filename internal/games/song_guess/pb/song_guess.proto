@@ -1,0 +1,198 @@
+syntax = "proto3";
+package bgex.song_guess.v1;
+option go_package = "github.com/serediukit/bgex-backend/internal/games/song_guess/pb;pb";
+
+// Team identifies one of the two teams, or the absence of one (the judge is
+// on no team; the judge participant always has Team = TEAM_NONE).
+enum Team {
+  TEAM_NONE = 0;
+  TEAM_A = 1;
+  TEAM_B = 2;
+}
+
+// Phase drives the state machine (plan "Chosen Approach" state machine
+// table). SONG_INTRO from the rules is deliberately not a phase: it is the
+// instant between select_cell and the first decision, fully described by
+// PHASE_SONG_PLAY with revealed == 0 and no pending decision.
+enum Phase {
+  PHASE_UNSPECIFIED = 0;
+  PHASE_ROSTER = 1;
+  PHASE_ROUND_SELECT = 2;
+  PHASE_SONG_PLAY = 3;
+  PHASE_PENDING_JUDGEMENT = 4;
+  PHASE_SONG_RESULT = 5;
+  PHASE_JUDGE_VACANT = 6;
+  PHASE_FINISHED = 7;
+}
+
+// Awaiting is the sub-state inside PHASE_SONG_PLAY: who is expected to act
+// next and with which decision.
+enum Awaiting {
+  AWAITING_UNSPECIFIED = 0;
+  AWAITING_ACTIVE = 1;      // active captain to choose guess/open_next
+  AWAITING_STEAL = 2;       // opponent captain to choose steal/pass
+  AWAITING_LAST_CHANCE = 3; // opponent captain's single post-wrong-guess chance
+}
+
+// JudgeKind records which decision a Pending judgement resolves, so
+// resolution never has to re-derive context from anything else.
+enum JudgeKind {
+  JUDGE_UNSPECIFIED = 0;
+  JUDGE_ACTIVE_GUESS = 1;
+  JUDGE_STEAL = 2;
+  JUDGE_LAST_CHANCE = 3;
+}
+
+// Participant is one seated player, captain, or judge. Team/is_captain/
+// is_judge live here (not in the lobby seam) per the plan's roster-in-
+// game-state approach (A1).
+message Participant {
+  int32 seat_index = 1;
+  string user_id = 2;
+  Team team = 3;
+  bool is_captain = 4;
+  bool is_judge = 5;
+  bool active = 6;             // false once the seat has left
+  int32 display_seat_order = 7; // reserved; unused in v1
+}
+
+// TeamState carries a team's display name and running score.
+message TeamState {
+  Team team = 1;
+  string name = 2;
+  int32 score = 3;
+}
+
+// Cell is one (language x bucket) entry of the flattened selection table.
+// A cell whose unplayed_song_ids empties is kept in the list with an empty
+// slice so the table's shape never changes mid-game; "disabled" is derived
+// from len(unplayed_song_ids) == 0, never from the cell's absence.
+message Cell {
+  int32 language_index = 1;
+  string language_name = 2;
+  int32 bucket = 3;
+  repeated string unplayed_song_ids = 4;
+  int32 played_count = 5;
+}
+
+// SongState is the currently drawn song. blocks holds the full authored
+// line server-side only; redaction of unrevealed blocks happens in View,
+// never here.
+message SongState {
+  string song_id = 1;
+  string language_name = 2;
+  int32 bucket = 3;
+  repeated string blocks = 4;
+  reserved 5; // was int32 revealed (a sequential count) — retired by ruling
+              // R3.1 in favor of revealed_mask below, which can represent
+              // free-choice (any order) block reveals; never reuse field 5.
+  bool steal_allowed = 6;
+  Awaiting awaiting = 7;
+  string title = 8;
+  string artist = 9;
+  string video_id = 10;
+  int32 start_sec = 11;
+  int32 end_sec = 12;
+  Team awarded_team = 13;
+  int32 awarded_points = 14;
+  bool skipped = 15;
+  string last_guess_text = 16; // most recent adjudicated guess, shown at SONG_RESULT
+  // repeated bool revealed_mask = 17: revealed_mask[i] is whether block i has
+  // been opened. Sized to len(blocks), every entry false, the instant a song
+  // is drawn (round.go's select_cell) — the mask's length is a load-bearing
+  // invariant (law 8), never derived on the fly. Superseding the retired
+  // int32 count lets the active captain open blocks in any order (ruling
+  // R3.1/C1) while making a duplicate or out-of-range reveal unrepresentable
+  // rather than merely invariant-checked. See revealedCount (play.go) for
+  // the sole place this is read as a count.
+  repeated bool revealed_mask = 17;
+  // steal_window_index is the block index the active captain chose via
+  // open_block when the current AWAITING_STEAL window was opened (ruling
+  // R3.2/C1): the specific still-closed block placed "on the table" for the
+  // opponent's steal decision. Pending does not exist yet at that instant
+  // (it is only ever set while phase == PHASE_PENDING_JUDGEMENT, invariant
+  // law 9), so this is where the chosen index has to live between
+  // open_block opening the window and its resolution — copied into the
+  // freshly-created Pending.owed_reveal_index if the opponent steals
+  // (applySteal), or consumed directly via revealAt if they decline
+  // (applyPassFromSteal). Meaningful only while awaiting == AWAITING_STEAL;
+  // always freshly overwritten by open_block immediately before that
+  // sub-state is entered, so its zero value is never read as a real index.
+  int32 steal_window_index = 18;
+}
+
+// Pending records an in-flight judge decision. It carries everything needed
+// to resolve either correct or incorrect, and everything void needs to
+// restore the pre-claim sub-state without a second source of truth.
+message Pending {
+  JudgeKind kind = 1;
+  Team claimant_team = 2;
+  int32 claimant_seat = 3;
+  string guess_text = 4;
+  int32 potential_at_claim = 5;
+  Awaiting resume_awaiting = 6;    // what void() restores
+  bool reveal_after_incorrect = 7; // true for JUDGE_STEAL: the open_next that
+                                   // opened this window still owes a reveal
+  // owed_reveal_index is the block index reveal_after_incorrect owes a
+  // reveal to, once ruling R3.2 wires the free-choice open_block action
+  // through it (judge.go's applyJudgeStealIncorrect will consume it via
+  // revealAt). Initialised to -1 everywhere a Pending is constructed in this
+  // step; not yet populated or read — that is R3.2's scope.
+  int32 owed_reveal_index = 8;
+}
+
+// ResultEntry is one row of the final per-participant results, populated
+// once at PHASE_FINISHED.
+message ResultEntry {
+  int32 seat_index = 1;
+  string user_id = 2;
+  Team team = 3;
+  int32 team_total = 4;
+  int32 rank = 5;
+  bool is_judge = 6;
+}
+
+// SongOutcome records one completed song for the results screen and for
+// assertInvariants' score-conservation check.
+message SongOutcome {
+  string song_id = 1;
+  string language_name = 2;
+  int32 bucket = 3;
+  int32 revealed_at_end = 4;
+  Team awarded_team = 5;
+  int32 points = 6;
+  string title = 7;
+  string artist = 8;
+  bool skipped = 9;
+  // The team that was ACTIVE for this round — i.e. the team whose captain
+  // picked the cell. Deliberately distinct from awarded_team: a successful
+  // steal or last-chance guess awards points to the active team's opponent
+  // (transition-table rows 16 and 18), so awarded_team cannot be used to
+  // reconstruct turn order. This field is what makes invariant law 12
+  // (alternation) checkable from GameState alone. Never TEAM_NONE.
+  Team active_team = 10;
+}
+
+// GameState is the whole authoritative, server-side state for one
+// song_guess lobby. Every collection is repeated, never map<...>: a
+// zero-entry protobuf map unmarshals as nil, and this game has no counter
+// that needs incrementing into a map either, so there is nothing a map
+// would buy here that a repeated field plus a lookup helper doesn't already
+// give safely.
+message GameState {
+  string pack_id = 1;
+  int32 pack_version = 2;
+  Phase phase = 3;
+  int64 seq = 4;
+  int32 host_seat = 5;
+  repeated Participant participants = 6; // sorted by seat_index
+  repeated TeamState teams = 7;          // exactly two: TEAM_A then TEAM_B
+  Team active_team = 8;
+  int32 round_no = 9;
+  repeated Cell cells = 10;              // flattened selection table
+  SongState song = 11;                   // nil outside SONG_PLAY/PENDING_JUDGEMENT/SONG_RESULT
+  Pending pending = 12;                  // set iff phase == PHASE_PENDING_JUDGEMENT
+  Phase resume_phase = 13;                // where JUDGE_VACANT returns to
+  repeated ResultEntry results = 14;     // populated at PHASE_FINISHED
+  repeated SongOutcome history = 15;     // one entry per completed song
+}
